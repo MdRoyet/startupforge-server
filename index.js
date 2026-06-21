@@ -10,6 +10,7 @@ const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB_NAME || "startupforge";
 const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
 
+// Multer memory buffer configuration (Max 5MB)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -25,6 +26,7 @@ const client = new MongoClient(uri, {
 
 let db;
 
+// CORS configuration matching your frontend url
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || clientUrl,
@@ -33,6 +35,7 @@ app.use(
 );
 app.use(express.json());
 
+// --- Authentication Middleware ---
 async function requireAuth(req, res, next) {
   try {
     const cookie = req.headers.cookie;
@@ -58,6 +61,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// --- Role-Based Access Control ---
 function requireRole(...roles) {
   return (req, res, next) => {
     const userRole = req.user?.role;
@@ -68,10 +72,12 @@ function requireRole(...roles) {
   };
 }
 
+// Base Route
 app.get("/", (req, res) => {
   res.json({ message: "StartupForge API is running" });
 });
 
+// --- Fixed Secure Image Upload Route ---
 app.post("/api/images", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -82,25 +88,33 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
 
     const imgbbKey = process.env.IMGBB_API_KEY;
     if (!imgbbKey) {
-      return res
-        .status(500)
-        .json({ success: false, error: "ImgBB API key not configured" });
+      return res.status(500).json({
+        success: false,
+        error: "Server configuration missing: ImgBB API key not found.",
+      });
     }
 
-    const base64 = req.file.buffer.toString("base64");
-    const body = new URLSearchParams();
-    body.append("image", base64);
+    // Convert memory buffer directly to a native Blob payload to send as standard form data
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    const formData = new FormData();
+    formData.append("image", blob, req.file.originalname);
 
+    // Dynamic stream transmission straight to ImgBB
     const imgbbRes = await fetch(
       `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
-      { method: "POST", body },
+      {
+        method: "POST",
+        body: formData, // Auto-sets dynamic multipart boundary headers safely
+      },
     );
+
     const data = await imgbbRes.json();
 
     if (!data.success) {
       return res.status(400).json({
         success: false,
-        error: data.error?.message || "Image upload failed",
+        error:
+          data.error?.message || "Image upload rejected by hosting provider.",
       });
     }
 
@@ -112,11 +126,15 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Image upload error:", error);
-    res.status(500).json({ success: false, error: "Image upload failed" });
+    console.error("Image upload exception details:", error);
+    res.status(500).json({
+      success: false,
+      error: `Internal execution error: ${error.message}`,
+    });
   }
 });
 
+// --- Startups Management ---
 app.post(
   "/api/startups",
   requireAuth,
@@ -140,10 +158,9 @@ app.post(
         !fundingStage ||
         !founderEmail
       ) {
-        return res.status(400).json({
-          success: false,
-          error: "All startup fields are required",
-        });
+        return res
+          .status(400)
+          .json({ success: false, error: "All startup fields are required" });
       }
 
       const startup = {
@@ -166,7 +183,9 @@ app.post(
       });
     } catch (error) {
       console.error("Create startup error:", error);
-      res.status(500).json({ success: false, error: "Failed to create startup" });
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to create startup" });
     }
   },
 );
@@ -185,19 +204,15 @@ app.get("/api/startups", async (req, res) => {
   }
 });
 
+// --- Opportunities Management ---
 app.post(
   "/api/opportunities",
   requireAuth,
   requireRole("Founder"),
   async (req, res) => {
     try {
-      const {
-        roleTitle,
-        requiredSkills,
-        workType,
-        commitmentLevel,
-        deadline,
-      } = req.body;
+      const { roleTitle, requiredSkills, workType, commitmentLevel, deadline } =
+        req.body;
 
       if (
         !roleTitle ||
@@ -224,7 +239,9 @@ app.post(
         updatedAt: new Date(),
       };
 
-      const result = await db.collection("opportunities").insertOne(opportunity);
+      const result = await db
+        .collection("opportunities")
+        .insertOne(opportunity);
 
       res.status(201).json({
         success: true,
@@ -280,14 +297,19 @@ app.get("/api/opportunities/:id", async (req, res) => {
   }
 });
 
+// --- Applications Flow Pipeline ---
 app.post(
   "/api/applications",
   requireAuth,
   requireRole("Collaborator"),
   async (req, res) => {
     try {
-      const { opportunityId, applicantEmail, portfolioLink, motivationMessage } =
-        req.body;
+      const {
+        opportunityId,
+        applicantEmail,
+        portfolioLink,
+        motivationMessage,
+      } = req.body;
 
       if (
         !opportunityId ||
@@ -302,7 +324,9 @@ app.post(
       }
 
       if (!ObjectId.isValid(opportunityId)) {
-        return res.status(400).json({ success: false, error: "Invalid opportunity ID" });
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid opportunity ID" });
       }
 
       const opportunity = await db.collection("opportunities").findOne({
@@ -387,6 +411,7 @@ app.get("/api/applications", requireAuth, async (req, res) => {
   }
 });
 
+// --- Server Lifecycle Management ---
 async function startServer() {
   try {
     console.log("Connecting to MongoDB Atlas...");
