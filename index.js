@@ -8,10 +8,11 @@ const app = express();
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
 
-// 🔄 FIXED: Point directly to startupforgeDB as shown in image_1053d4.png
+// Connected directly to your authenticated database instance
 const dbName = process.env.MONGODB_DB_NAME || "startupforgeDB";
 const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
 
+// Multer memory buffer configuration (Max 5MB)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -27,6 +28,7 @@ const client = new MongoClient(uri, {
 
 let db;
 
+// CORS configuration supporting dynamic credential passing
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || clientUrl,
@@ -61,6 +63,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// --- Role-Based Access Control Middleware ---
 function requireRole(...roles) {
   return (req, res, next) => {
     const userRole = req.user?.role;
@@ -71,6 +74,7 @@ function requireRole(...roles) {
   };
 }
 
+// Base Route
 app.get("/", (req, res) => {
   res.json({ message: "StartupForge API is running" });
 });
@@ -130,17 +134,21 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
   }
 });
 
-// --- NEW LOGIC: Fetch Current Authenticated Founder's Startup ---
+// --- FIXED ENDPOINT: Fetch All Startups Owned By This Founder ---
 app.get(
   "/api/startups/me",
   requireAuth,
   requireRole("Founder"),
   async (req, res) => {
     try {
-      const startup = await db
+      // Swapped .findOne() out for .find().toArray() to load all historical created startups
+      const startups = await db
         .collection("startups")
-        .findOne({ founderId: req.user.id });
-      res.json({ success: true, data: startup });
+        .find({ founderId: req.user.id })
+        .sort({ createdAt: -1 }) // Places newest creations at the top of the timeline array
+        .toArray();
+
+      res.json({ success: true, data: startups });
     } catch (error) {
       console.error("Fetch profile error:", error);
       res
@@ -237,12 +245,10 @@ app.post(
         !deadline ||
         !requiredSkills?.length
       ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "All opportunity fields are required",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "All opportunity fields are required",
+        });
       }
 
       const opportunity = {
@@ -335,12 +341,10 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "All application fields are required",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "All application fields are required",
+        });
       }
 
       if (!ObjectId.isValid(opportunityId)) {
@@ -365,12 +369,10 @@ app.post(
       });
 
       if (existing) {
-        return res
-          .status(409)
-          .json({
-            success: false,
-            error: "You have already applied to this opportunity",
-          });
+        return res.status(409).json({
+          success: false,
+          error: "You have already applied to this opportunity",
+        });
       }
 
       const application = {
