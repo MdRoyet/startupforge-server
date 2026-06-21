@@ -7,10 +7,11 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB_NAME || "startupforge";
+
+// 🔄 FIXED: Point directly to startupforgeDB as shown in image_1053d4.png
+const dbName = process.env.MONGODB_DB_NAME || "startupforgeDB";
 const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
 
-// Multer memory buffer configuration (Max 5MB)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -26,7 +27,6 @@ const client = new MongoClient(uri, {
 
 let db;
 
-// CORS configuration matching your frontend url
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN || clientUrl,
@@ -61,7 +61,6 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// --- Role-Based Access Control ---
 function requireRole(...roles) {
   return (req, res, next) => {
     const userRole = req.user?.role;
@@ -72,12 +71,11 @@ function requireRole(...roles) {
   };
 }
 
-// Base Route
 app.get("/", (req, res) => {
   res.json({ message: "StartupForge API is running" });
 });
 
-// --- Fixed Secure Image Upload Route ---
+// --- Secure Image Upload Route ---
 app.post("/api/images", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -94,17 +92,15 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
       });
     }
 
-    // Convert memory buffer directly to a native Blob payload to send as standard form data
     const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
     const formData = new FormData();
     formData.append("image", blob, req.file.originalname);
 
-    // Dynamic stream transmission straight to ImgBB
     const imgbbRes = await fetch(
       `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
       {
         method: "POST",
-        body: formData, // Auto-sets dynamic multipart boundary headers safely
+        body: formData,
       },
     );
 
@@ -133,6 +129,26 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
     });
   }
 });
+
+// --- NEW LOGIC: Fetch Current Authenticated Founder's Startup ---
+app.get(
+  "/api/startups/me",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const startup = await db
+        .collection("startups")
+        .findOne({ founderId: req.user.id });
+      res.json({ success: true, data: startup });
+    } catch (error) {
+      console.error("Fetch profile error:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to fetch startup data." });
+    }
+  },
+);
 
 // --- Startups Management ---
 app.post(
@@ -221,10 +237,12 @@ app.post(
         !deadline ||
         !requiredSkills?.length
       ) {
-        return res.status(400).json({
-          success: false,
-          error: "All opportunity fields are required",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "All opportunity fields are required",
+          });
       }
 
       const opportunity = {
@@ -317,10 +335,12 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res.status(400).json({
-          success: false,
-          error: "All application fields are required",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "All application fields are required",
+          });
       }
 
       if (!ObjectId.isValid(opportunityId)) {
@@ -345,10 +365,12 @@ app.post(
       });
 
       if (existing) {
-        return res.status(409).json({
-          success: false,
-          error: "You have already applied to this opportunity",
-        });
+        return res
+          .status(409)
+          .json({
+            success: false,
+            error: "You have already applied to this opportunity",
+          });
       }
 
       const application = {
