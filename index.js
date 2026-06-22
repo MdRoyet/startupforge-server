@@ -8,7 +8,6 @@ const app = express();
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
 
-// Connected directly to your authenticated database instance
 const dbName = process.env.MONGODB_DB_NAME || "startupforgeDB";
 const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
 
@@ -79,7 +78,7 @@ app.get("/", (req, res) => {
   res.json({ message: "StartupForge API is running" });
 });
 
-// --- Secure Image Upload Route ---
+// --- Secure Image Upload Route (ImgBB Bridge) ---
 app.post("/api/images", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -134,37 +133,19 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
   }
 });
 
-// --- FIXED ENDPOINT: Fetch All Startups Owned By This Founder ---
-app.get(
-  "/api/startups/me",
-  requireAuth,
-  requireRole("Founder"),
-  async (req, res) => {
-    try {
-      // Swapped .findOne() out for .find().toArray() to load all historical created startups
-      const startups = await db
-        .collection("startups")
-        .find({ founderId: req.user.id })
-        .sort({ createdAt: -1 }) // Places newest creations at the top of the timeline array
-        .toArray();
+// ==========================================
+// --- STARTUPS CRUD MANAGEMENT MODULE ---
+// ==========================================
 
-      res.json({ success: true, data: startups });
-    } catch (error) {
-      console.error("Fetch profile error:", error);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to fetch startup data." });
-    }
-  },
-);
-
-// --- Startups Management ---
+// Create Startup Profile
 app.post(
   "/api/startups",
   requireAuth,
   requireRole("Founder"),
   async (req, res) => {
     try {
+      const startupsCollection =
+        req.app.locals.startups || db.collection("startups");
       const {
         startupName,
         logo,
@@ -199,7 +180,7 @@ app.post(
         updatedAt: new Date(),
       };
 
-      const result = await db.collection("startups").insertOne(startup);
+      const result = await startupsCollection.insertOne(startup);
 
       res.status(201).json({
         success: true,
@@ -214,10 +195,36 @@ app.post(
   },
 );
 
+// Fetch All Startups Owned By Currently Logged In Founder
+app.get(
+  "/api/startups/me",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const startupsCollection =
+        req.app.locals.startups || db.collection("startups");
+      const startups = await startupsCollection
+        .find({ founderId: req.user.id })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.json({ success: true, data: startups });
+    } catch (error) {
+      console.error("Fetch profile error:", error);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to fetch startup data." });
+    }
+  },
+);
+
+// Public Endpoint: Fetch All Registered Startups across ecosystem nodes
 app.get("/api/startups", async (req, res) => {
   try {
-    const startups = await db
-      .collection("startups")
+    const startupsCollection =
+      req.app.locals.startups || db.collection("startups");
+    const startups = await startupsCollection
       .find({})
       .sort({ createdAt: -1 })
       .toArray();
@@ -228,15 +235,148 @@ app.get("/api/startups", async (req, res) => {
   }
 });
 
-// --- Opportunities Management ---
+// Update Existing Startup Profile metrics
+app.put(
+  "/api/startups/:id",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const startupsCollection =
+        req.app.locals.startups || db.collection("startups");
+      const startupId = req.params.id;
+      const {
+        startupName,
+        logo,
+        industry,
+        description,
+        fundingStage,
+        founderEmail,
+      } = req.body;
+
+      if (!ObjectId.isValid(startupId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid target startup ID format." });
+      }
+
+      const filter = { _id: new ObjectId(startupId), founderId: req.user.id };
+      const updatedDocument = {
+        $set: {
+          startupName,
+          logo,
+          industry,
+          description,
+          fundingStage,
+          founderEmail,
+          updatedAt: new Date(),
+        },
+      };
+
+      const updateResult = await startupsCollection.updateOne(
+        filter,
+        updatedDocument,
+      );
+
+      if (updateResult.matchedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error:
+              "Startup profile not found or unauthorized modification attempt.",
+          });
+      }
+
+      const freshDocument = await startupsCollection.findOne({
+        _id: new ObjectId(startupId),
+      });
+      res.status(200).json({
+        success: true,
+        message: "Startup credentials synchronized successfully.",
+        data: freshDocument,
+      });
+    } catch (error) {
+      console.error("CRITICAL DB Update Exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server update error pipeline failed.",
+        });
+    }
+  },
+);
+
+// Delete Startup Profile permanently
+app.delete(
+  "/api/startups/:id",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const startupsCollection =
+        req.app.locals.startups || db.collection("startups");
+      const startupId = req.params.id;
+
+      if (!ObjectId.isValid(startupId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid target startup ID format." });
+      }
+
+      const result = await startupsCollection.deleteOne({
+        _id: new ObjectId(startupId),
+        founderId: req.user.id,
+      });
+
+      if (result.deletedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error:
+              "Target startup asset records not found or unauthorized deletion attempt.",
+          });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Startup asset permanently removed from database indexes.",
+      });
+    } catch (error) {
+      console.error("DB Deletion Exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server deletion pipeline failed.",
+        });
+    }
+  },
+);
+
+// =============================================
+// --- OPPORTUNITIES CRUD MANAGEMENT MODULE ---
+// =============================================
+
+// Post New Position Opportunity
 app.post(
   "/api/opportunities",
   requireAuth,
   requireRole("Founder"),
   async (req, res) => {
     try {
-      const { roleTitle, requiredSkills, workType, commitmentLevel, deadline } =
-        req.body;
+      const opportunitiesCollection =
+        req.app.locals.opportunities || db.collection("opportunities");
+      const {
+        roleTitle,
+        requiredSkills,
+        workType,
+        commitmentLevel,
+        deadline,
+        industry,
+      } = req.body;
 
       if (
         !roleTitle ||
@@ -257,18 +397,18 @@ app.post(
         workType,
         commitmentLevel,
         deadline: new Date(deadline),
+        industry: industry || "General",
         founderId: req.user.id,
         founderEmail: req.user.email,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
-      const result = await db
-        .collection("opportunities")
-        .insertOne(opportunity);
+      const result = await opportunitiesCollection.insertOne(opportunity);
 
       res.status(201).json({
         success: true,
+        message: "Opportunity indexed successfully.",
         data: { ...opportunity, _id: result.insertedId },
       });
     } catch (error) {
@@ -280,10 +420,12 @@ app.post(
   },
 );
 
+// Public Endpoint: Fetch All Registered Opportunities
 app.get("/api/opportunities", async (req, res) => {
   try {
-    const opportunities = await db
-      .collection("opportunities")
+    const opportunitiesCollection =
+      req.app.locals.opportunities || db.collection("opportunities");
+    const opportunities = await opportunitiesCollection
       .find({})
       .sort({ createdAt: -1 })
       .toArray();
@@ -296,13 +438,16 @@ app.get("/api/opportunities", async (req, res) => {
   }
 });
 
+// Lookup Singular Specific Opportunity Details
 app.get("/api/opportunities/:id", async (req, res) => {
   try {
+    const opportunitiesCollection =
+      req.app.locals.opportunities || db.collection("opportunities");
     if (!ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ success: false, error: "Invalid ID" });
     }
 
-    const opportunity = await db.collection("opportunities").findOne({
+    const opportunity = await opportunitiesCollection.findOne({
       _id: new ObjectId(req.params.id),
     });
 
@@ -321,7 +466,136 @@ app.get("/api/opportunities/:id", async (req, res) => {
   }
 });
 
-// --- Applications Flow Pipeline ---
+// Update Existing Opportunity Posting metrics
+app.put(
+  "/api/opportunities/:id",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const opportunitiesCollection =
+        req.app.locals.opportunities || db.collection("opportunities");
+      const targetId = req.params.id;
+      const {
+        roleTitle,
+        requiredSkills,
+        workType,
+        commitmentLevel,
+        deadline,
+        industry,
+      } = req.body;
+
+      if (!ObjectId.isValid(targetId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Malformed ID schema." });
+      }
+
+      const filter = { _id: new ObjectId(targetId), founderId: req.user.id };
+      const updatePayload = {
+        $set: {
+          roleTitle,
+          requiredSkills,
+          workType,
+          commitmentLevel,
+          deadline: new Date(deadline),
+          industry: industry || "General",
+          updatedAt: new Date(),
+        },
+      };
+
+      const updateResult = await opportunitiesCollection.updateOne(
+        filter,
+        updatePayload,
+      );
+
+      if (updateResult.matchedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error: "Opportunity not located or unauthorized update attempt.",
+          });
+      }
+
+      const freshDocument = await opportunitiesCollection.findOne({
+        _id: new ObjectId(targetId),
+      });
+      res
+        .status(200)
+        .json({
+          success: true,
+          message: "Records successfully updated.",
+          data: freshDocument,
+        });
+    } catch (error) {
+      console.error("DB Update Opportunity Exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server error modifying record target values.",
+        });
+    }
+  },
+);
+
+// Drop Opportunity from active lists and database index pools
+app.delete(
+  "/api/opportunities/:id",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const opportunitiesCollection =
+        req.app.locals.opportunities || db.collection("opportunities");
+      const targetId = req.params.id;
+
+      if (!ObjectId.isValid(targetId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Malformed ID schema." });
+      }
+
+      const result = await opportunitiesCollection.deleteOne({
+        _id: new ObjectId(targetId),
+        founderId: req.user.id,
+      });
+
+      if (result.deletedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error:
+              "Opportunity record not located or unauthorized deletion attempt.",
+          });
+      }
+
+      res
+        .status(200)
+        .json({
+          success: true,
+          message: "Opportunity dropped from server index logs cleanly.",
+        });
+    } catch (error) {
+      console.error("DB Deletion Opportunity Exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            "Internal server error handling document dropping execution pipelines.",
+        });
+    }
+  },
+);
+
+// =============================================
+// --- APPLICATIONS PIPELINE FLOW MODULE ---
+// =============================================
+
+// Dispatch New Application to a specific Opportunity
 app.post(
   "/api/applications",
   requireAuth,
@@ -341,10 +615,12 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res.status(400).json({
-          success: false,
-          error: "All application fields are required",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "All application fields are required",
+          });
       }
 
       if (!ObjectId.isValid(opportunityId)) {
@@ -369,10 +645,12 @@ app.post(
       });
 
       if (existing) {
-        return res.status(409).json({
-          success: false,
-          error: "You have already applied to this opportunity",
-        });
+        return res
+          .status(409)
+          .json({
+            success: false,
+            error: "You have already applied to this opportunity",
+          });
       }
 
       const application = {
@@ -403,6 +681,7 @@ app.post(
   },
 );
 
+// List Submissions filtered cleanly by User Account Role Type parameters
 app.get("/api/applications", requireAuth, async (req, res) => {
   try {
     const { role } = req.user;
@@ -435,20 +714,33 @@ app.get("/api/applications", requireAuth, async (req, res) => {
   }
 });
 
-// --- Server Lifecycle Management ---
+// --- Server Lifecycle Connection Handlers ---
 async function startServer() {
   try {
-    console.log("Connecting to MongoDB Atlas...");
+    console.log("Connecting to MongoDB Atlas Cluster...");
     await client.connect();
     await client.db("admin").command({ ping: 1 });
+
     db = client.db(dbName);
-    console.log(`✓ Connected to database: ${dbName}`);
+
+    // --- BIND CORE DATA COLLECTIONS DIRECTLY INTO APP LOCALS INSTANCES ---
+    app.locals.db = db;
+    app.locals.startups = db.collection("startups");
+    app.locals.opportunities = db.collection("opportunities");
+
+    console.log(`✓ Connected to Database: ${dbName}`);
+    console.log(
+      "✓ Successfully mapped active collections pointers to app.locals framework.",
+    );
 
     app.listen(port, () => {
-      console.log(`✓ Express server running on port ${port}`);
+      console.log(`✓ Express server listening on network port: ${port}`);
     });
   } catch (error) {
-    console.error("✕ Failed to connect to the database:", error);
+    console.error(
+      "✕ Critical error initializing database routing processes:",
+      error,
+    );
     process.exit(1);
   }
 }
@@ -457,274 +749,8 @@ startServer();
 
 process.on("SIGINT", async () => {
   await client.close();
-  console.log("\nMongoDB connection closed. Server shutting down.");
+  console.log(
+    "\nMongoDB interface pipeline closed down cleanly. Server thread terminating.",
+  );
   process.exit(0);
-});
-
-// --- 1. UPDATE ROUTE (PUT) ---
-app.put("/api/startups/:id", async (req, res) => {
-  try {
-    // 1. Safe collection reference checking
-    const startupsCollection =
-      req.app.locals.startups || req.app.locals.db?.collection("startups");
-
-    if (!startupsCollection) {
-      console.error(
-        "Database initialization error: Collection reference missing.",
-      );
-      return res
-        .status(500)
-        .json({
-          success: false,
-          error: "Database collection connection is unavailable.",
-        });
-    }
-
-    const startupId = req.params.id;
-    const {
-      startupName,
-      logo,
-      industry,
-      description,
-      fundingStage,
-      founderEmail,
-    } = req.body;
-
-    // 2. Structural ID Validation
-    if (!ObjectId.isValid(startupId)) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid target startup ID format." });
-    }
-
-    const filter = { _id: new ObjectId(startupId) };
-    const updatedDocument = {
-      $set: {
-        startupName,
-        logo,
-        industry,
-        description,
-        fundingStage,
-        founderEmail,
-        updatedAt: new Date(),
-      },
-    };
-
-    // 3. Robust Update Pipeline (Highly compatible across all MongoDB driver versions)
-    const updateResult = await startupsCollection.updateOne(
-      filter,
-      updatedDocument,
-    );
-
-    if (updateResult.matchedCount === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Startup profile not found." });
-    }
-
-    // 4. Retrieve the freshly modified document to return to the client side
-    const freshDocument = await startupsCollection.findOne(filter);
-
-    res.status(200).json({
-      success: true,
-      message: "Startup credentials synchronized successfully.",
-      data: freshDocument,
-    });
-  } catch (error) {
-    // This logs the exact internal trace to your server terminal so you can read it
-    console.error("CRITICAL DB Update Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server update error pipeline failed.",
-      });
-  }
-});
-
-// --- 2. DELETE ROUTE (DELETE) ---
-app.delete("/api/startups/:id", async (req, res) => {
-  try {
-    const startupsCollection = req.app.locals.startups;
-    const startupId = req.params.id;
-
-    if (!ObjectId.isValid(startupId)) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid target startup ID format." });
-    }
-
-    const result = await startupsCollection.deleteOne({
-      _id: new ObjectId(startupId),
-    });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        error: "Target startup asset records not found.",
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Startup asset permanently removed from database indexes.",
-    });
-  } catch (error) {
-    console.error("DB Deletion Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server deletion pipeline failed.",
-    });
-  }
-});
-
-// --- 1. POST: CREATE OPPORTUNITY ---
-app.post("/api/opportunities", async (req, res) => {
-  try {
-    const opportunitiesCollection = req.app.locals.opportunities;
-    const {
-      roleTitle,
-      requiredSkills,
-      workType,
-      commitmentLevel,
-      deadline,
-      industry,
-    } = req.body;
-
-    const newOpportunity = {
-      roleTitle,
-      requiredSkills, // Array of strings
-      workType,
-      commitmentLevel,
-      deadline,
-      industry: industry || "General",
-      createdAt: new Date(),
-    };
-
-    const result = await opportunitiesCollection.insertOne(newOpportunity);
-
-    res.status(201).json({
-      success: true,
-      message: "Opportunity indexed successfully.",
-      data: { _id: result.insertedId, ...newOpportunity },
-    });
-  } catch (error) {
-    console.error("DB Opportunity Insertion Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error posting opportunity.",
-    });
-  }
-});
-
-// --- 2. GET: FETCH ALL OPPORTUNITIES ---
-app.get("/api/opportunities", async (req, res) => {
-  try {
-    const opportunitiesCollection = req.app.locals.opportunities;
-    // Sorting by newest creation time parameters
-    const listings = await opportunitiesCollection
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.status(200).json({ success: true, data: listings });
-  } catch (error) {
-    console.error("DB Fetch Opportunities Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error retrieving opportunities.",
-    });
-  }
-});
-
-// --- 3. PUT: UPDATE EXISTING OPPORTUNITY ---
-app.put("/api/opportunities/:id", async (req, res) => {
-  try {
-    const opportunitiesCollection = req.app.locals.opportunities;
-    const targetId = req.params.id;
-    const {
-      roleTitle,
-      requiredSkills,
-      workType,
-      commitmentLevel,
-      deadline,
-      industry,
-    } = req.body;
-
-    if (!ObjectId.isValid(targetId)) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Malformed ID schema." });
-    }
-
-    const result = await opportunitiesCollection.findOneAndUpdate(
-      { _id: new ObjectId(targetId) },
-      {
-        $set: {
-          roleTitle,
-          requiredSkills,
-          workType,
-          commitmentLevel,
-          deadline,
-          industry,
-          updatedAt: new Date(),
-        },
-      },
-      { returnDocument: "after" },
-    );
-
-    if (!result) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Opportunity not found." });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Records successfully updated.",
-      data: result,
-    });
-  } catch (error) {
-    console.error("DB Update Opportunity Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error modifying record target values.",
-    });
-  }
-});
-
-// --- 4. DELETE: DROP OPPORTUNITY FROM COLLECTIONS ---
-app.delete("/api/opportunities/:id", async (req, res) => {
-  try {
-    const opportunitiesCollection = req.app.locals.opportunities;
-    const targetId = req.params.id;
-
-    if (!ObjectId.isValid(targetId)) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Malformed ID schema." });
-    }
-
-    const result = await opportunitiesCollection.deleteOne({
-      _id: new ObjectId(targetId),
-    });
-
-    if (result.deletedCount === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Opportunity record not located." });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Opportunity dropped from server index logs cleanly.",
-    });
-  } catch (error) {
-    console.error("DB Deletion Opportunity Exception:", error);
-    res.status(500).json({
-      success: false,
-      error:
-        "Internal server error handling document dropping execution pipelines.",
-    });
-  }
 });
