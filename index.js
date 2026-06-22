@@ -14,6 +14,8 @@ if (process.env.STRIPE_SECRET_KEY) {
 }
 console.log("=========================================\n");
 
+const jwt = require("jsonwebtoken");
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -52,34 +54,46 @@ app.use(
 app.use(express.json());
 
 // --- Authentication Middleware ---
-async function requireAuth(req, res, next) {
+// --- Stateless JWT Verification Middleware ---
+function requireAuth(req, res, next) {
   try {
-    const cookie = req.headers.cookie;
-    if (!cookie) {
-      return res.status(401).json({ success: false, error: "Unauthorized" });
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Unauthorized: Missing credentials" });
     }
 
-    const response = await fetch(`${clientUrl}/api/auth/get-session`, {
-      headers: { cookie },
-    });
+    // 1. Extract the specific token out of the incoming cookie headers string
+    const match = cookieHeader.match(/startupforge_jwt=([^;]+)/);
+    const token = match ? match[1] : null;
 
-    const session = await response.json();
-    if (!session?.user) {
-      return res.status(401).json({ success: false, error: "Unauthorized" });
+    if (!token) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Unauthorized: Access token missing" });
     }
 
-    req.user = session.user;
-    req.session = session.session;
+    // 2. Instantly verify and decode the token locally using your shared secret
+    const decodedPayload = jwt.verify(token, process.env.JWT_SECRET);
 
-    // --- ADMINISTRATIVE PRIVILEGE INJECT SECURITY INTERCEPT ---
-    if (req.user?.email === "admin@startupforge.com") {
-      req.user.role = "Admin";
-    }
+    // 3. Hydrate the user parameters down your route pipelines automatically
+    req.user = {
+      id: decodedPayload.id,
+      email: decodedPayload.email,
+      name: decodedPayload.name,
+      role: decodedPayload.role,
+    };
 
     next();
   } catch (error) {
-    console.error("Auth middleware error:", error);
-    return res.status(401).json({ success: false, error: "Unauthorized" });
+    console.error("JWT localized token validation failed:", error.message);
+    return res
+      .status(401)
+      .json({
+        success: false,
+        error: "Unauthorized: Session token invalid or expired",
+      });
   }
 }
 
