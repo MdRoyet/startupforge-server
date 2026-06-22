@@ -1172,15 +1172,23 @@ app.post("/api/checkout/success", async (req, res) => {
     }
 
     const stripeInstance = require("stripe")(secretKey);
-
     const stripeSession =
       await stripeInstance.checkout.sessions.retrieve(sessionId);
+
     if (!stripeSession || stripeSession.payment_status !== "paid") {
-      return res.status(400).json({
-        success: false,
-        error: "Transaction mapping validation check rejected.",
-      });
+      return res
+        .status(400)
+        .json({ success: false, error: "Transaction invalid." });
     }
+
+    // ✨ FIXED: Extract metrics and email tokens up here before logs use them
+    const userRole = stripeSession.metadata?.role || "collaborator";
+    const customerEmail = stripeSession.customer_details?.email;
+    const capitalVolume = stripeSession.amount_total / 100;
+
+    console.log(
+      `\n✓ [STRIPE FULFILLMENT] Initiating validation for: ${customerEmail} | Assigned Role: ${userRole}`,
+    );
 
     const currentDb = req.app.locals.db || db;
     if (!currentDb) {
@@ -1193,6 +1201,7 @@ app.post("/api/checkout/success", async (req, res) => {
     const paymentsCollection = currentDb.collection("payments");
     const usersCollection = currentDb.collection("user");
 
+    // Check for previous duplicate processing
     const transactionLogged = await paymentsCollection.findOne({
       stripeSessionId: sessionId,
     });
@@ -1200,11 +1209,9 @@ app.post("/api/checkout/success", async (req, res) => {
       return res.json({
         success: true,
         message: "Fulfillment completed during previous execution cycle.",
+        role: userRole, // Safe fallback response return
       });
     }
-
-    const customerEmail = stripeSession.customer_details?.email;
-    const capitalVolume = stripeSession.amount_total / 100;
 
     const customerAccount = await usersCollection.findOne({
       email: customerEmail,
@@ -1216,6 +1223,7 @@ app.post("/api/checkout/success", async (req, res) => {
       });
     }
 
+    // Write payment logging trace records
     await paymentsCollection.insertOne({
       stripeSessionId: sessionId,
       userId: customerAccount._id,
@@ -1226,6 +1234,7 @@ app.post("/api/checkout/success", async (req, res) => {
       dateSettled: new Date(),
     });
 
+    // Write matching transcript history ledger data
     await currentDb.collection("transactions").insertOne({
       stripeSessionId: sessionId,
       userEmail: customerEmail,
@@ -1235,18 +1244,21 @@ app.post("/api/checkout/success", async (req, res) => {
       date: new Date(),
     });
 
+    // Elevate the profile subscription tier to Pro
     await usersCollection.updateOne(
       { _id: customerAccount._id },
       { $set: { plan: "Pro", updatedAt: new Date() } },
     );
 
     console.log(
-      `\n✓ [STRIPE FULFILLMENT COMPLETED] Upgraded: ${customerEmail}`,
+      `\n✓ [STRIPE FULFILLMENT COMPLETED] Upgraded: ${customerEmail} to Pro Tier`,
     );
 
+    // 🔥 FIXED: Return the final tracking token payload ONLY when database operations are done
     return res.json({
       success: true,
       message: "Transaction saved and plan elevated successfully.",
+      role: userRole,
     });
   } catch (error) {
     console.error("Fulfillment intercept execution error loop pass:", error);
