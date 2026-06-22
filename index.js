@@ -460,3 +460,98 @@ process.on("SIGINT", async () => {
   console.log("\nMongoDB connection closed. Server shutting down.");
   process.exit(0);
 });
+
+// --- 1. UPDATE ROUTE (PUT) ---
+app.put("/api/startups/:id", async (req, res) => {
+  try {
+    const startupsCollection = req.app.locals.startups; // Accessing database collection
+    const startupId = req.params.id;
+    const {
+      startupName,
+      logo,
+      industry,
+      description,
+      fundingStage,
+      founderEmail,
+    } = req.body;
+
+    // Validate valid MongoDB ObjectId
+    if (!ObjectId.isValid(startupId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid target startup ID format." });
+    }
+
+    const updatedDocument = {
+      $set: {
+        startupName,
+        logo,
+        industry,
+        description,
+        fundingStage,
+        founderEmail,
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await startupsCollection.findOneAndUpdate(
+      { _id: new ObjectId(startupId) },
+      updatedDocument,
+      { returnDocument: "after" }, // Returns the modified document directly
+    );
+
+    if (!result) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Startup profile not found." });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Startup credentials synchronized successfully.",
+      data: result,
+    });
+  } catch (error) {
+    console.error("DB Update Exception:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server update error pipeline failed.",
+    });
+  }
+});
+
+// --- 2. DELETE ROUTE (DELETE) ---
+app.delete("/api/startups/:id", async (req, res) => {
+  try {
+    const startupsCollection = req.app.locals.startups;
+    const startupId = req.params.id;
+
+    if (!ObjectId.isValid(startupId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid target startup ID format." });
+    }
+
+    const result = await startupsCollection.deleteOne({
+      _id: new ObjectId(startupId),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Target startup asset records not found.",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Startup asset permanently removed from database indexes.",
+    });
+  } catch (error) {
+    console.error("DB Deletion Exception:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server deletion pipeline failed.",
+    });
+  }
+});
