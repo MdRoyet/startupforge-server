@@ -464,7 +464,22 @@ process.on("SIGINT", async () => {
 // --- 1. UPDATE ROUTE (PUT) ---
 app.put("/api/startups/:id", async (req, res) => {
   try {
-    const startupsCollection = req.app.locals.startups; // Accessing database collection
+    // 1. Safe collection reference checking
+    const startupsCollection =
+      req.app.locals.startups || req.app.locals.db?.collection("startups");
+
+    if (!startupsCollection) {
+      console.error(
+        "Database initialization error: Collection reference missing.",
+      );
+      return res
+        .status(500)
+        .json({
+          success: false,
+          error: "Database collection connection is unavailable.",
+        });
+    }
+
     const startupId = req.params.id;
     const {
       startupName,
@@ -475,13 +490,14 @@ app.put("/api/startups/:id", async (req, res) => {
       founderEmail,
     } = req.body;
 
-    // Validate valid MongoDB ObjectId
+    // 2. Structural ID Validation
     if (!ObjectId.isValid(startupId)) {
       return res
         .status(400)
         .json({ success: false, error: "Invalid target startup ID format." });
     }
 
+    const filter = { _id: new ObjectId(startupId) };
     const updatedDocument = {
       $set: {
         startupName,
@@ -494,29 +510,35 @@ app.put("/api/startups/:id", async (req, res) => {
       },
     };
 
-    const result = await startupsCollection.findOneAndUpdate(
-      { _id: new ObjectId(startupId) },
+    // 3. Robust Update Pipeline (Highly compatible across all MongoDB driver versions)
+    const updateResult = await startupsCollection.updateOne(
+      filter,
       updatedDocument,
-      { returnDocument: "after" }, // Returns the modified document directly
     );
 
-    if (!result) {
+    if (updateResult.matchedCount === 0) {
       return res
         .status(404)
         .json({ success: false, error: "Startup profile not found." });
     }
 
+    // 4. Retrieve the freshly modified document to return to the client side
+    const freshDocument = await startupsCollection.findOne(filter);
+
     res.status(200).json({
       success: true,
       message: "Startup credentials synchronized successfully.",
-      data: result,
+      data: freshDocument,
     });
   } catch (error) {
-    console.error("DB Update Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server update error pipeline failed.",
-    });
+    // This logs the exact internal trace to your server terminal so you can read it
+    console.error("CRITICAL DB Update Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server update error pipeline failed.",
+      });
   }
 });
 
@@ -588,12 +610,10 @@ app.post("/api/opportunities", async (req, res) => {
     });
   } catch (error) {
     console.error("DB Opportunity Insertion Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server error posting opportunity.",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Internal server error posting opportunity.",
+    });
   }
 });
 
@@ -610,12 +630,10 @@ app.get("/api/opportunities", async (req, res) => {
     res.status(200).json({ success: true, data: listings });
   } catch (error) {
     console.error("DB Fetch Opportunities Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server error retrieving opportunities.",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Internal server error retrieving opportunities.",
+    });
   }
 });
 
@@ -661,21 +679,17 @@ app.put("/api/opportunities/:id", async (req, res) => {
         .json({ success: false, error: "Opportunity not found." });
     }
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Records successfully updated.",
-        data: result,
-      });
+    res.status(200).json({
+      success: true,
+      message: "Records successfully updated.",
+      data: result,
+    });
   } catch (error) {
     console.error("DB Update Opportunity Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server error modifying record target values.",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Internal server error modifying record target values.",
+    });
   }
 });
 
@@ -701,20 +715,16 @@ app.delete("/api/opportunities/:id", async (req, res) => {
         .json({ success: false, error: "Opportunity record not located." });
     }
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Opportunity dropped from server index logs cleanly.",
-      });
+    res.status(200).json({
+      success: true,
+      message: "Opportunity dropped from server index logs cleanly.",
+    });
   } catch (error) {
     console.error("DB Deletion Opportunity Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error:
-          "Internal server error handling document dropping execution pipelines.",
-      });
+    res.status(500).json({
+      success: false,
+      error:
+        "Internal server error handling document dropping execution pipelines.",
+    });
   }
 });
