@@ -451,7 +451,7 @@ app.post(
   },
 );
 
-// --- GET: FETCH OPPORTUNITIES (WITH TYPE-AGNOSTIC STARTUP FILTER & LIMIT FIX) ---
+// Fetch Opportunities List (With Type-Agnostic Query Filters)
 app.get("/api/opportunities", async (req, res) => {
   try {
     const opportunitiesCollection =
@@ -460,8 +460,6 @@ app.get("/api/opportunities", async (req, res) => {
 
     let query = {};
     if (startupId) {
-      // --- CRITICAL ARCHITECTURAL FIX ---
-      // This creates a flexible filter array supporting both legacy String and native ObjectId formats.
       const matchConditions = [startupId];
       if (ObjectId.isValid(startupId)) {
         matchConditions.push(new ObjectId(startupId));
@@ -469,7 +467,6 @@ app.get("/api/opportunities", async (req, res) => {
       query.startupId = { $in: matchConditions };
     }
 
-    // TARGETED DETAILED ROUTE TARGET: Return full list directly if targeted to a startup profile
     if (startupId) {
       const listings = await opportunitiesCollection
         .find(query)
@@ -479,7 +476,6 @@ app.get("/api/opportunities", async (req, res) => {
       return res.status(200).json({ success: true, data: listings });
     }
 
-    // GLOBAL DECK PAGINATION PIPELINE:
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = parseInt(limit, 10) || 6;
     const skip = (pageNum - 1) * limitNum;
@@ -506,24 +502,30 @@ app.get("/api/opportunities", async (req, res) => {
     });
   } catch (error) {
     console.error("DB Fetch Opportunities Pagination/Filter Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error sorting positions collection.",
-    });
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server error sorting positions collection.",
+      });
   }
 });
 
-// Lookup Singular Specific Opportunity Details
+// --- FIXED ENDPOINT: TYPE-AGNOSTIC SINGULAR LOOKUP ---
 app.get("/api/opportunities/:id", async (req, res) => {
   try {
     const opportunitiesCollection =
       req.app.locals.opportunities || db.collection("opportunities");
-    if (!ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ success: false, error: "Invalid ID" });
+    const targetId = req.params.id;
+
+    // Supports querying by string IDs and ObjectIds simultaneously
+    const matchConditions = [targetId];
+    if (ObjectId.isValid(targetId)) {
+      matchConditions.push(new ObjectId(targetId));
     }
 
     const opportunity = await opportunitiesCollection.findOne({
-      _id: new ObjectId(req.params.id),
+      _id: { $in: matchConditions },
     });
 
     if (!opportunity) {
@@ -611,7 +613,7 @@ app.put(
   },
 );
 
-// Drop Opportunity from active lists and database index pools
+// Drop Opportunity from active lists
 app.delete(
   "/api/opportunities/:id",
   requireAuth,
@@ -647,11 +649,13 @@ app.delete(
       });
     } catch (error) {
       console.error("DB Deletion Opportunity Exception:", error);
-      res.status(500).json({
-        success: false,
-        error:
-          "Internal server error handling document dropping execution pipelines.",
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            "Internal server error handling document dropping execution pipelines.",
+        });
     }
   },
 );
@@ -660,6 +664,7 @@ app.delete(
 // --- APPLICATIONS PIPELINE FLOW MODULE ---
 // =============================================
 
+// --- FIXED ENDPOINT: TYPE-AGNOSTIC APPLICATION INTAKE ---
 app.post(
   "/api/applications",
   requireAuth,
@@ -687,14 +692,13 @@ app.post(
           });
       }
 
-      if (!ObjectId.isValid(opportunityId)) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Invalid opportunity ID" });
+      const matchConditions = [opportunityId];
+      if (ObjectId.isValid(opportunityId)) {
+        matchConditions.push(new ObjectId(opportunityId));
       }
 
       const opportunity = await db.collection("opportunities").findOne({
-        _id: new ObjectId(opportunityId),
+        _id: { $in: matchConditions },
       });
 
       if (!opportunity) {
@@ -745,6 +749,7 @@ app.post(
   },
 );
 
+// List Submissions filtered cleanly by Account Role Parameters
 app.get("/api/applications", requireAuth, async (req, res) => {
   try {
     const { role } = req.user;
@@ -776,6 +781,85 @@ app.get("/api/applications", requireAuth, async (req, res) => {
       .json({ success: false, error: "Failed to fetch applications" });
   }
 });
+
+// --- NEW ENDPOINT: FOUNDER ACCEPT/REJECT SYSTEM MANAGEMENT ROUTE ---
+app.patch(
+  "/api/applications/:id/status",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const applicationsCollection = db.collection("applications");
+      const applicationId = req.params.id;
+      const { status } = req.body; // Expects "Accepted" or "Rejected"
+
+      if (!["Accepted", "Rejected"].includes(status)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid status value assignment." });
+      }
+
+      const matchConditions = [applicationId];
+      if (ObjectId.isValid(applicationId)) {
+        matchConditions.push(new ObjectId(applicationId));
+      }
+
+      // 1. Locate the application document target
+      const application = await applicationsCollection.findOne({
+        _id: { $in: matchConditions },
+      });
+      if (!application) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error: "Application profile registry not found.",
+          });
+      }
+
+      // 2. Validate Ownership: Confirm this job belongs to the logged-in founder
+      const opportunityMatchConditions = [application.opportunityId];
+      if (ObjectId.isValid(application.opportunityId)) {
+        opportunityMatchConditions.push(
+          new ObjectId(application.opportunityId),
+        );
+      }
+
+      const opportunity = await db.collection("opportunities").findOne({
+        _id: { $in: opportunityMatchConditions },
+        founderId: req.user.id,
+      });
+
+      if (!opportunity) {
+        return res
+          .status(403)
+          .json({
+            success: false,
+            error: "Forbidden: Access denied to change this document state.",
+          });
+      }
+
+      // 3. Commit status changes
+      await applicationsCollection.updateOne(
+        { _id: application._id },
+        { $set: { status, updatedAt: new Date() } },
+      );
+
+      res.json({
+        success: true,
+        message: `Application status updated to ${status} successfully.`,
+      });
+    } catch (error) {
+      console.error("Application processing toggle exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server error altering status state.",
+        });
+    }
+  },
+);
 
 // --- Server Lifecycle Connection Handlers ---
 async function startServer() {
