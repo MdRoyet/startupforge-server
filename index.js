@@ -555,3 +555,166 @@ app.delete("/api/startups/:id", async (req, res) => {
     });
   }
 });
+
+// --- 1. POST: CREATE OPPORTUNITY ---
+app.post("/api/opportunities", async (req, res) => {
+  try {
+    const opportunitiesCollection = req.app.locals.opportunities;
+    const {
+      roleTitle,
+      requiredSkills,
+      workType,
+      commitmentLevel,
+      deadline,
+      industry,
+    } = req.body;
+
+    const newOpportunity = {
+      roleTitle,
+      requiredSkills, // Array of strings
+      workType,
+      commitmentLevel,
+      deadline,
+      industry: industry || "General",
+      createdAt: new Date(),
+    };
+
+    const result = await opportunitiesCollection.insertOne(newOpportunity);
+
+    res.status(201).json({
+      success: true,
+      message: "Opportunity indexed successfully.",
+      data: { _id: result.insertedId, ...newOpportunity },
+    });
+  } catch (error) {
+    console.error("DB Opportunity Insertion Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server error posting opportunity.",
+      });
+  }
+});
+
+// --- 2. GET: FETCH ALL OPPORTUNITIES ---
+app.get("/api/opportunities", async (req, res) => {
+  try {
+    const opportunitiesCollection = req.app.locals.opportunities;
+    // Sorting by newest creation time parameters
+    const listings = await opportunitiesCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({ success: true, data: listings });
+  } catch (error) {
+    console.error("DB Fetch Opportunities Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server error retrieving opportunities.",
+      });
+  }
+});
+
+// --- 3. PUT: UPDATE EXISTING OPPORTUNITY ---
+app.put("/api/opportunities/:id", async (req, res) => {
+  try {
+    const opportunitiesCollection = req.app.locals.opportunities;
+    const targetId = req.params.id;
+    const {
+      roleTitle,
+      requiredSkills,
+      workType,
+      commitmentLevel,
+      deadline,
+      industry,
+    } = req.body;
+
+    if (!ObjectId.isValid(targetId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Malformed ID schema." });
+    }
+
+    const result = await opportunitiesCollection.findOneAndUpdate(
+      { _id: new ObjectId(targetId) },
+      {
+        $set: {
+          roleTitle,
+          requiredSkills,
+          workType,
+          commitmentLevel,
+          deadline,
+          industry,
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" },
+    );
+
+    if (!result) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Opportunity not found." });
+    }
+
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "Records successfully updated.",
+        data: result,
+      });
+  } catch (error) {
+    console.error("DB Update Opportunity Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server error modifying record target values.",
+      });
+  }
+});
+
+// --- 4. DELETE: DROP OPPORTUNITY FROM COLLECTIONS ---
+app.delete("/api/opportunities/:id", async (req, res) => {
+  try {
+    const opportunitiesCollection = req.app.locals.opportunities;
+    const targetId = req.params.id;
+
+    if (!ObjectId.isValid(targetId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Malformed ID schema." });
+    }
+
+    const result = await opportunitiesCollection.deleteOne({
+      _id: new ObjectId(targetId),
+    });
+
+    if (result.deletedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Opportunity record not located." });
+    }
+
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "Opportunity dropped from server index logs cleanly.",
+      });
+  } catch (error) {
+    console.error("DB Deletion Opportunity Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error:
+          "Internal server error handling document dropping execution pipelines.",
+      });
+  }
+});
