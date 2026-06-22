@@ -53,6 +53,79 @@ app.use(
 );
 app.use(express.json());
 
+// =================================================================
+// --- BETTER AUTH TO JWT BRIDGE MODULE ---
+// =================================================================
+app.post("/api/auth/sync-token", async (req, res) => {
+  try {
+    let token = req.body?.token;
+
+    if (token) {
+      jwt.verify(token, process.env.JWT_SECRET);
+    } else {
+      // Fallback: validate Better Auth session via Next.js (server-to-server)
+      const cookieHeader = req.headers.cookie || "";
+      const match = cookieHeader.match(/better-auth\.session_token=([^;]+)/);
+      const betterAuthToken = match ? match[1] : null;
+
+      if (!betterAuthToken) {
+        return res.status(401).json({
+          success: false,
+          error: "Better Auth session cookie missing.",
+        });
+      }
+
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+      const sessionCheck = await fetch(`${clientUrl}/api/auth/get-session`, {
+        headers: {
+          Cookie: `better-auth.session_token=${betterAuthToken}`,
+        },
+      });
+
+      if (!sessionCheck.ok) {
+        return res.status(401).json({
+          success: false,
+          error: "Failed to verify Better Auth session.",
+        });
+      }
+
+      const sessionData = await sessionCheck.json();
+      const user = sessionData.user;
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: "No user mapped to this session.",
+        });
+      }
+
+      const jwtPayload = {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role || "Collaborator",
+      };
+
+      token = jwt.sign(jwtPayload, process.env.JWT_SECRET, {
+        expiresIn: "7d",
+      });
+    }
+
+    res.cookie("startupforge_jwt", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: "/",
+    });
+
+    res.json({ success: true, message: "JWT synchronized successfully." });
+  } catch (error) {
+    console.error("JWT Sync Bridge Error:", error);
+    res.status(500).json({ success: false, error: "Internal sync failure." });
+  }
+});
+
 // --- Authentication Middleware ---
 // --- Stateless JWT Verification Middleware ---
 function requireAuth(req, res, next) {
@@ -88,12 +161,10 @@ function requireAuth(req, res, next) {
     next();
   } catch (error) {
     console.error("JWT localized token validation failed:", error.message);
-    return res
-      .status(401)
-      .json({
-        success: false,
-        error: "Unauthorized: Session token invalid or expired",
-      });
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized: Session token invalid or expired",
+    });
   }
 }
 
