@@ -279,13 +279,11 @@ app.put(
       );
 
       if (updateResult.matchedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error:
-              "Startup profile not found or unauthorized modification attempt.",
-          });
+        return res.status(404).json({
+          success: false,
+          error:
+            "Startup profile not found or unauthorized modification attempt.",
+        });
       }
 
       const freshDocument = await startupsCollection.findOne({
@@ -298,12 +296,10 @@ app.put(
       });
     } catch (error) {
       console.error("CRITICAL DB Update Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server update error pipeline failed.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server update error pipeline failed.",
+      });
     }
   },
 );
@@ -331,13 +327,11 @@ app.delete(
       });
 
       if (result.deletedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error:
-              "Target startup asset records not found or unauthorized deletion attempt.",
-          });
+        return res.status(404).json({
+          success: false,
+          error:
+            "Target startup asset records not found or unauthorized deletion attempt.",
+        });
       }
 
       res.status(200).json({
@@ -346,12 +340,10 @@ app.delete(
       });
     } catch (error) {
       console.error("DB Deletion Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server deletion pipeline failed.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server deletion pipeline failed.",
+      });
     }
   },
 );
@@ -361,6 +353,7 @@ app.delete(
 // =============================================
 
 // Post New Position Opportunity
+// --- POST: CREATE OPPORTUNITY UNDER A SPECIFIC STARTUP ---
 app.post(
   "/api/opportunities",
   requireAuth,
@@ -369,7 +362,11 @@ app.post(
     try {
       const opportunitiesCollection =
         req.app.locals.opportunities || db.collection("opportunities");
+      const startupsCollection =
+        req.app.locals.startups || db.collection("startups");
+
       const {
+        startupId,
         roleTitle,
         requiredSkills,
         workType,
@@ -378,7 +375,9 @@ app.post(
         industry,
       } = req.body;
 
+      // 1. Validation Check
       if (
+        !startupId ||
         !roleTitle ||
         !workType ||
         !commitmentLevel ||
@@ -387,17 +386,45 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-          error: "All opportunity fields are required",
+          error:
+            "All fields, including corporate company assignment selection, are required.",
         });
       }
 
+      if (!ObjectId.isValid(startupId)) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "Malformed Startup ID alignment schema.",
+          });
+      }
+
+      // 2. Security Check: Verify this startup belongs to the logged-in founder
+      const startup = await startupsCollection.findOne({
+        _id: new ObjectId(startupId),
+        founderId: req.user.id,
+      });
+
+      if (!startup) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "Access Denied: You do not hold ownership privileges for this corporate profile.",
+        });
+      }
+
+      // 3. Build Relational Object Structure
       const opportunity = {
+        startupId: new ObjectId(startupId),
+        startupName: startup.startupName, // Embedded denormalized value for rapid performance loading
+        startupLogo: startup.logo, // Embedded denormalized value for rapid performance loading
         roleTitle,
         requiredSkills,
         workType,
         commitmentLevel,
         deadline: new Date(deadline),
-        industry: industry || "General",
+        industry: industry || startup.industry || "General",
         founderId: req.user.id,
         founderEmail: req.user.email,
         createdAt: new Date(),
@@ -408,14 +435,18 @@ app.post(
 
       res.status(201).json({
         success: true,
-        message: "Opportunity indexed successfully.",
+        message:
+          "Opportunity posted under corporate umbrella records successfully.",
         data: { ...opportunity, _id: result.insertedId },
       });
     } catch (error) {
-      console.error("Create opportunity error:", error);
+      console.error("Create opportunity relational mapping error:", error);
       res
         .status(500)
-        .json({ success: false, error: "Failed to create opportunity" });
+        .json({
+          success: false,
+          error: "Failed to link and create opportunity.",
+        });
     }
   },
 );
@@ -510,32 +541,26 @@ app.put(
       );
 
       if (updateResult.matchedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: "Opportunity not located or unauthorized update attempt.",
-          });
+        return res.status(404).json({
+          success: false,
+          error: "Opportunity not located or unauthorized update attempt.",
+        });
       }
 
       const freshDocument = await opportunitiesCollection.findOne({
         _id: new ObjectId(targetId),
       });
-      res
-        .status(200)
-        .json({
-          success: true,
-          message: "Records successfully updated.",
-          data: freshDocument,
-        });
+      res.status(200).json({
+        success: true,
+        message: "Records successfully updated.",
+        data: freshDocument,
+      });
     } catch (error) {
       console.error("DB Update Opportunity Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server error modifying record target values.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server error modifying record target values.",
+      });
     }
   },
 );
@@ -563,30 +588,24 @@ app.delete(
       });
 
       if (result.deletedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error:
-              "Opportunity record not located or unauthorized deletion attempt.",
-          });
-      }
-
-      res
-        .status(200)
-        .json({
-          success: true,
-          message: "Opportunity dropped from server index logs cleanly.",
-        });
-    } catch (error) {
-      console.error("DB Deletion Opportunity Exception:", error);
-      res
-        .status(500)
-        .json({
+        return res.status(404).json({
           success: false,
           error:
-            "Internal server error handling document dropping execution pipelines.",
+            "Opportunity record not located or unauthorized deletion attempt.",
         });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Opportunity dropped from server index logs cleanly.",
+      });
+    } catch (error) {
+      console.error("DB Deletion Opportunity Exception:", error);
+      res.status(500).json({
+        success: false,
+        error:
+          "Internal server error handling document dropping execution pipelines.",
+      });
     }
   },
 );
@@ -615,12 +634,10 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "All application fields are required",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "All application fields are required",
+        });
       }
 
       if (!ObjectId.isValid(opportunityId)) {
@@ -645,12 +662,10 @@ app.post(
       });
 
       if (existing) {
-        return res
-          .status(409)
-          .json({
-            success: false,
-            error: "You have already applied to this opportunity",
-          });
+        return res.status(409).json({
+          success: false,
+          error: "You have already applied to this opportunity",
+        });
       }
 
       const application = {
