@@ -296,10 +296,12 @@ app.put(
       });
     } catch (error) {
       console.error("CRITICAL DB Update Exception:", error);
-      res.status(500).json({
-        success: false,
-        error: "Internal server update error pipeline failed.",
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server update error pipeline failed.",
+        });
     }
   },
 );
@@ -340,10 +342,12 @@ app.delete(
       });
     } catch (error) {
       console.error("DB Deletion Exception:", error);
-      res.status(500).json({
-        success: false,
-        error: "Internal server deletion pipeline failed.",
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server deletion pipeline failed.",
+        });
     }
   },
 );
@@ -353,7 +357,6 @@ app.delete(
 // =============================================
 
 // Post New Position Opportunity
-// --- POST: CREATE OPPORTUNITY UNDER A SPECIFIC STARTUP ---
 app.post(
   "/api/opportunities",
   requireAuth,
@@ -375,7 +378,6 @@ app.post(
         industry,
       } = req.body;
 
-      // 1. Validation Check
       if (
         !startupId ||
         !roleTitle ||
@@ -392,13 +394,14 @@ app.post(
       }
 
       if (!ObjectId.isValid(startupId)) {
-        return res.status(400).json({
-          success: false,
-          error: "Malformed Startup ID alignment schema.",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "Malformed Startup ID alignment schema.",
+          });
       }
 
-      // 2. Security Check: Verify this startup belongs to the logged-in founder
       const startup = await startupsCollection.findOne({
         _id: new ObjectId(startupId),
         founderId: req.user.id,
@@ -412,11 +415,10 @@ app.post(
         });
       }
 
-      // 3. Build Relational Object Structure
       const opportunity = {
         startupId: new ObjectId(startupId),
-        startupName: startup.startupName, // Embedded denormalized value for rapid performance loading
-        startupLogo: startup.logo, // Embedded denormalized value for rapid performance loading
+        startupName: startup.startupName,
+        startupLogo: startup.logo,
         roleTitle,
         requiredSkills,
         workType,
@@ -439,34 +441,35 @@ app.post(
       });
     } catch (error) {
       console.error("Create opportunity relational mapping error:", error);
-      res.status(500).json({
-        success: false,
-        error: "Failed to link and create opportunity.",
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Failed to link and create opportunity.",
+        });
     }
   },
 );
 
-// --- GET: FETCH OPPORTUNITIES (WITH OPTIONAL STARTUP FILTER & PAGINATION) ---
+// --- GET: FETCH OPPORTUNITIES (WITH TYPE-AGNOSTIC STARTUP FILTER & LIMIT FIX) ---
 app.get("/api/opportunities", async (req, res) => {
   try {
     const opportunitiesCollection =
       req.app.locals.opportunities || db.collection("opportunities");
-
     const { startupId, page, limit } = req.query;
 
-    // 1. Build a dynamic query matrix
     let query = {};
     if (startupId) {
-      if (!ObjectId.isValid(startupId)) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Malformed Startup ID format." });
+      // --- CRITICAL ARCHITECTURAL FIX ---
+      // This creates a flexible filter array supporting both legacy String and native ObjectId formats.
+      const matchConditions = [startupId];
+      if (ObjectId.isValid(startupId)) {
+        matchConditions.push(new ObjectId(startupId));
       }
-      query.startupId = new ObjectId(startupId);
+      query.startupId = { $in: matchConditions };
     }
 
-    // 2. TARGETED FLOW: If checking a specific startup profile, return ALL its jobs immediately
+    // TARGETED DETAILED ROUTE TARGET: Return full list directly if targeted to a startup profile
     if (startupId) {
       const listings = await opportunitiesCollection
         .find(query)
@@ -476,7 +479,7 @@ app.get("/api/opportunities", async (req, res) => {
       return res.status(200).json({ success: true, data: listings });
     }
 
-    // 3. GLOBAL FLOW: Apply default homepage server-side pagination boundaries
+    // GLOBAL DECK PAGINATION PIPELINE:
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = parseInt(limit, 10) || 6;
     const skip = (pageNum - 1) * limitNum;
@@ -503,12 +506,10 @@ app.get("/api/opportunities", async (req, res) => {
     });
   } catch (error) {
     console.error("DB Fetch Opportunities Pagination/Filter Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server error sorting positions collection.",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Internal server error sorting positions collection.",
+    });
   }
 });
 
@@ -600,10 +601,12 @@ app.put(
       });
     } catch (error) {
       console.error("DB Update Opportunity Exception:", error);
-      res.status(500).json({
-        success: false,
-        error: "Internal server error modifying record target values.",
-      });
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Internal server error modifying record target values.",
+        });
     }
   },
 );
@@ -657,7 +660,6 @@ app.delete(
 // --- APPLICATIONS PIPELINE FLOW MODULE ---
 // =============================================
 
-// Dispatch New Application to a specific Opportunity
 app.post(
   "/api/applications",
   requireAuth,
@@ -677,10 +679,12 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res.status(400).json({
-          success: false,
-          error: "All application fields are required",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: "All application fields are required",
+          });
       }
 
       if (!ObjectId.isValid(opportunityId)) {
@@ -705,10 +709,12 @@ app.post(
       });
 
       if (existing) {
-        return res.status(409).json({
-          success: false,
-          error: "You have already applied to this opportunity",
-        });
+        return res
+          .status(409)
+          .json({
+            success: false,
+            error: "You have already applied to this opportunity",
+          });
       }
 
       const application = {
@@ -739,7 +745,6 @@ app.post(
   },
 );
 
-// List Submissions filtered cleanly by User Account Role Type parameters
 app.get("/api/applications", requireAuth, async (req, res) => {
   try {
     const { role } = req.user;
@@ -781,7 +786,6 @@ async function startServer() {
 
     db = client.db(dbName);
 
-    // --- BIND CORE DATA COLLECTIONS DIRECTLY INTO APP LOCALS INSTANCES ---
     app.locals.db = db;
     app.locals.startups = db.collection("startups");
     app.locals.opportunities = db.collection("opportunities");
