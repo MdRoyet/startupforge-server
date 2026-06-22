@@ -51,20 +51,6 @@ app.use(
 );
 app.use(express.json());
 
-console.log("\n=== 🔍 BACKEND ENV SANITY DIAGNOSIS ===");
-console.log("Terminal Execution Path (CWD):", process.cwd());
-console.log(
-  "Is STRIPE_SECRET_KEY visible?:",
-  process.env.STRIPE_SECRET_KEY ? "YES ✅" : "NO ❌ (Missing/Undefined)",
-);
-if (process.env.STRIPE_SECRET_KEY) {
-  console.log(
-    "Key starting characters check:",
-    process.env.STRIPE_SECRET_KEY.slice(0, 10) + "...",
-  );
-}
-console.log("=========================================\n");
-
 // --- Authentication Middleware ---
 async function requireAuth(req, res, next) {
   try {
@@ -685,7 +671,7 @@ app.delete(
 // --- APPLICATIONS PIPELINE FLOW MODULE ---
 // =============================================
 
-// Application Submission Pathway
+// Application Submission Pathway with Tier Limits Quota Verification
 app.post(
   "/api/applications",
   requireAuth,
@@ -708,6 +694,31 @@ app.post(
         return res.status(400).json({
           success: false,
           error: "All application fields are required",
+        });
+      }
+
+      const queryConditions = [req.user.id];
+      if (ObjectId.isValid(req.user.id)) {
+        queryConditions.push(new ObjectId(req.user.id));
+      }
+
+      // 1. Fetch User Record to Enforce Tier Boundaries
+      const activeUser = await db
+        .collection("user")
+        .findOne({ _id: { $in: queryConditions } });
+      const currentPlan = activeUser?.plan || "Free";
+      const allowedCeiling = currentPlan === "Pro" ? 100 : 3;
+
+      const totalApplicationsSubmitted = await db
+        .collection("applications")
+        .countDocuments({
+          applicantId: { $in: queryConditions },
+        });
+
+      if (totalApplicationsSubmitted >= allowedCeiling) {
+        return res.status(403).json({
+          success: false,
+          error: `Quota Exhausted: Your current ${currentPlan} tier limits you to ${allowedCeiling} roles maximum. Upgrade to Pro to unlock more submissions.`,
         });
       }
 
@@ -972,17 +983,24 @@ app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
 // --- COLLABORATOR TELEMETRY DASHBOARD METRICS ---
 // =================================================================
 
-// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics
+// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics (With Plan Sync)
+// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics (With Direct Email Sync)
 app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
   try {
     const applicationsCollection = db.collection("applications");
+    const usersCollection = db.collection("user");
     const targetId = req.user.id;
+
+    // 1. Bulletproof Account Lookup using the verified session email string
+    const activeUser = await usersCollection.findOne({ email: req.user.email });
+    const userPlan = activeUser?.plan || "Free";
 
     const queryConditions = [targetId];
     if (ObjectId.isValid(targetId)) {
       queryConditions.push(new ObjectId(targetId));
     }
 
+    // 2. Aggregate tracking values
     const [totalApplied, totalAccepted, totalPending] = await Promise.all([
       applicationsCollection.countDocuments({
         applicantId: { $in: queryConditions },
@@ -997,10 +1015,12 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
       }),
     ]);
 
-    console.log(`\n--- [COLLABORATOR OVERVIEW TELEMETRY] ---`);
-    console.log(
-      `User: ${req.user.email} | Applied: ${totalApplied} | Accepted: ${totalAccepted} | Pending: ${totalPending}`,
-    );
+    // 3. CRUCIAL LOG: Read this printout in your backend terminal window on refresh
+    console.log(`\n=== 📊 DATABASE TRANSMISSION DEBUG ===`);
+    console.log(`User Target: ${req.user.email}`);
+    console.log(`Plan Checked from MongoDB: "${userPlan}"`);
+    console.log(`Applications Counted: ${totalApplied}`);
+    console.log(`======================================\n`);
 
     res.json({
       success: true,
@@ -1008,6 +1028,7 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
         totalApplied,
         totalAccepted,
         totalPending,
+        plan: userPlan,
       },
     });
   } catch (error) {
@@ -1020,58 +1041,6 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
 });
 
 // =================================================================
-// --- WORKSPACE FULFILLMENT & TELEMETRY DECKS ---
-// =================================================================
-
-// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics
-app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
-  try {
-    const applicationsCollection = db.collection("applications");
-    const usersCollection = db.collection("user");
-    const targetId = req.user.id;
-
-    const queryConditions = [targetId];
-    if (ObjectId.isValid(targetId)) {
-      queryConditions.push(new ObjectId(targetId));
-    }
-
-    const activeUser = await usersCollection.findOne({
-      _id: { $in: queryConditions },
-    });
-    const userPlan = activeUser?.plan || "Free";
-
-    const [totalApplied, totalAccepted, totalPending] = await Promise.all([
-      applicationsCollection.countDocuments({
-        applicantId: { $in: queryConditions },
-      }),
-      applicationsCollection.countDocuments({
-        applicantId: { $in: queryConditions },
-        status: "Accepted",
-      }),
-      applicationsCollection.countDocuments({
-        applicantId: { $in: queryConditions },
-        status: "Pending",
-      }),
-    ]);
-
-    res.json({
-      success: true,
-      data: { totalApplied, totalAccepted, totalPending, plan: userPlan },
-    });
-  } catch (error) {
-    console.error("Collaborator overview telemetry exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal analytics pipeline processing failed.",
-    });
-  }
-});
-
-// POST: Stripe Success Transaction Capture & Record Fulfillment
-// =================================================================
-// --- STRIPE SUCCESS TRANSACTION CAPTURE & RECORD FULFILLMENT ---
-// =================================================================
-// =================================================================
 // --- STRIPE SUCCESS TRANSACTION CAPTURE & RECORD FULFILLMENT ---
 // =================================================================
 app.post("/api/checkout/success", async (req, res) => {
@@ -1083,7 +1052,6 @@ app.post("/api/checkout/success", async (req, res) => {
         .json({ success: false, error: "Missing session identifier token." });
     }
 
-    // 1. STEP ONE: Validate the key string BEFORE initializing the Stripe constructor
     const secretKey = process.env.STRIPE_SECRET_KEY;
     if (!secretKey || secretKey.trim() === "") {
       return res.status(500).json({
@@ -1093,10 +1061,8 @@ app.post("/api/checkout/success", async (req, res) => {
       });
     }
 
-    // 2. STEP TWO: Safely spin up the instance now that the key is verified
     const stripeInstance = require("stripe")(secretKey);
 
-    // Retrieve the checkout session from Stripe
     const stripeSession =
       await stripeInstance.checkout.sessions.retrieve(sessionId);
     if (!stripeSession || stripeSession.payment_status !== "paid") {
@@ -1106,7 +1072,6 @@ app.post("/api/checkout/success", async (req, res) => {
       });
     }
 
-    // Ensure database pointers are fully available
     const currentDb = req.app.locals.db || db;
     if (!currentDb) {
       return res.status(500).json({
@@ -1118,7 +1083,6 @@ app.post("/api/checkout/success", async (req, res) => {
     const paymentsCollection = currentDb.collection("payments");
     const usersCollection = currentDb.collection("user");
 
-    // Check if this transaction has already been fulfilled
     const transactionLogged = await paymentsCollection.findOne({
       stripeSessionId: sessionId,
     });
@@ -1132,7 +1096,6 @@ app.post("/api/checkout/success", async (req, res) => {
     const customerEmail = stripeSession.customer_details?.email;
     const capitalVolume = stripeSession.amount_total / 100;
 
-    // Find the user associated with the payment email
     const customerAccount = await usersCollection.findOne({
       email: customerEmail,
     });
@@ -1143,7 +1106,6 @@ app.post("/api/checkout/success", async (req, res) => {
       });
     }
 
-    // Log transaction payload directly into payments collection
     await paymentsCollection.insertOne({
       stripeSessionId: sessionId,
       userId: customerAccount._id,
@@ -1154,7 +1116,6 @@ app.post("/api/checkout/success", async (req, res) => {
       dateSettled: new Date(),
     });
 
-    // Write log directly inside transactions collection for admin overview audits dashboard sync
     await currentDb.collection("transactions").insertOne({
       stripeSessionId: sessionId,
       userEmail: customerEmail,
@@ -1164,7 +1125,6 @@ app.post("/api/checkout/success", async (req, res) => {
       date: new Date(),
     });
 
-    // Elevate the user to the Pro Plan
     await usersCollection.updateOne(
       { _id: customerAccount._id },
       { $set: { plan: "Pro", updatedAt: new Date() } },
@@ -1187,72 +1147,9 @@ app.post("/api/checkout/success", async (req, res) => {
   }
 });
 
-// GET: Founder Dashboard Insights Telemetry
-app.get(
-  "/api/founder/overview",
-  requireAuth,
-  requireRole("Founder"),
-  async (req, res) => {
-    try {
-      const opportunitiesCollection = db.collection("opportunities");
-      const applicationsCollection = db.collection("applications");
-      const targetFounderId = req.user.id;
-
-      const founderQueryConditions = [targetFounderId];
-      if (ObjectId.isValid(targetFounderId)) {
-        founderQueryConditions.push(new ObjectId(targetFounderId));
-      }
-
-      const myOpportunities = await opportunitiesCollection
-        .find({ founderId: { $in: founderQueryConditions } })
-        .project({ _id: 1 })
-        .toArray();
-
-      const opportunityIdsStrings = myOpportunities.map((opp) =>
-        opp._id.toString(),
-      );
-
-      const recentApplications = await applicationsCollection
-        .find({ opportunityId: { $in: opportunityIdsStrings } })
-        .sort({ createdAt: -1 })
-        .limit(4)
-        .toArray();
-
-      const [totalOpportunities, totalApplications, totalAccepted] =
-        await Promise.all([
-          opportunitiesCollection.countDocuments({
-            founderId: { $in: founderQueryConditions },
-          }),
-          applicationsCollection.countDocuments({
-            opportunityId: { $in: opportunityIdsStrings },
-          }),
-          applicationsCollection.countDocuments({
-            opportunityId: { $in: opportunityIdsStrings },
-            status: "Accepted",
-          }),
-        ]);
-
-      res.json({
-        success: true,
-        data: {
-          metrics: { totalOpportunities, totalApplications, totalAccepted },
-          recentApplications,
-        },
-      });
-    } catch (error) {
-      console.error("Error compiling founder overview analytics:", error);
-      res.status(500).json({
-        success: false,
-        error: "Internal server error resolving dashboard data summaries.",
-      });
-    }
-  },
-);
-
 // =================================================================
 // --- FOUNDER DASHBOARD TELEMETRY INSIGHTS PIPELINE ---
 // =================================================================
-
 app.get(
   "/api/founder/overview",
   requireAuth,
@@ -1305,19 +1202,12 @@ app.get(
       res.json({
         success: true,
         data: {
-          metrics: {
-            totalOpportunities,
-            totalApplications,
-            totalAccepted,
-          },
+          metrics: { totalOpportunities, totalApplications, totalAccepted },
           recentApplications,
         },
       });
     } catch (error) {
-      console.error(
-        "Critical error compiling founder overview analytics metrics:",
-        error,
-      );
+      console.error("Error compiling founder overview analytics:", error);
       res.status(500).json({
         success: false,
         error: "Internal server error resolving dashboard data summaries.",
