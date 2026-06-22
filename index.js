@@ -979,6 +979,85 @@ app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
   }
 });
 
+// GET: Founder Dashboard Insights Telemetry (With Live Plan Sync)
+app.get(
+  "/api/founder/overview",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const opportunitiesCollection = db.collection("opportunities");
+      const applicationsCollection = db.collection("applications");
+      const usersCollection = db.collection("user");
+      const targetFounderId = req.user.id;
+
+      // 1. Fetch user document using the verified session email string
+      const activeUser = await usersCollection.findOne({
+        email: req.user.email,
+      });
+      const userPlan = activeUser?.plan || "Free";
+
+      const founderQueryConditions = [targetFounderId];
+      if (ObjectId.isValid(targetFounderId)) {
+        founderQueryConditions.push(new ObjectId(targetFounderId));
+      }
+
+      const myOpportunities = await opportunitiesCollection
+        .find({ founderId: { $in: founderQueryConditions } })
+        .project({ _id: 1 })
+        .toArray();
+
+      const opportunityIdsStrings = myOpportunities.map((opp) =>
+        opp._id.toString(),
+      );
+
+      const recentApplications = await applicationsCollection
+        .find({ opportunityId: { $in: opportunityIdsStrings } })
+        .sort({ createdAt: -1 })
+        .limit(4)
+        .toArray();
+
+      const [totalOpportunities, totalApplications, totalAccepted] =
+        await Promise.all([
+          opportunitiesCollection.countDocuments({
+            founderId: { $in: founderQueryConditions },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+            status: "Accepted",
+          }),
+        ]);
+
+      console.log(`\n--- [FOUNDER OVERVIEW TELEMETRY] ---`);
+      console.log(
+        `Founder: ${req.user.email} | Opps: ${totalOpportunities} | Plan Status: ${userPlan}`,
+      );
+
+      // 2. Return data properties including the active plan tier
+      res.json({
+        success: true,
+        data: {
+          metrics: { totalOpportunities, totalApplications, totalAccepted },
+          recentApplications,
+          plan: userPlan, // 🧠 Sent as a single source of truth for dashboard components
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Error compiling founder overview analytics metrics:",
+        error,
+      );
+      res.status(500).json({
+        success: false,
+        error: "Internal server error resolving dashboard data summaries.",
+      });
+    }
+  },
+);
+
 // =================================================================
 // --- COLLABORATOR TELEMETRY DASHBOARD METRICS ---
 // =================================================================
