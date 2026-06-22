@@ -848,8 +848,22 @@ app.patch(
 app.get("/api/collaborator/profile", requireAuth, async (req, res) => {
   try {
     const usersCollection = db.collection("user");
-    const activeUser = await usersCollection.findOne({ _id: req.user.id });
+    const targetId = req.user.id;
+
+    // Build a type-agnostic lookup array to handle both String and ObjectId shapes
+    const queryConditions = [targetId];
+    if (ObjectId.isValid(targetId)) {
+      queryConditions.push(new ObjectId(targetId));
+    }
+
+    const activeUser = await usersCollection.findOne({
+      _id: { $in: queryConditions },
+    });
+
     if (!activeUser) {
+      console.warn(
+        `[PROFILE GET 404] No user document matched ID: "${targetId}"`,
+      );
       return res
         .status(404)
         .json({ success: false, error: "Identity records profile not found." });
@@ -876,11 +890,20 @@ app.get("/api/collaborator/profile", requireAuth, async (req, res) => {
 // PUT: Modify/Synchronize Extended Collaborator Profile Values
 app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
   try {
+    console.log("\n--- [PROFILE PUT INTAKE] ---");
+    console.log("Target User ID:", req.user?.id);
+
     const usersCollection = db.collection("user");
+    const targetId = req.user.id;
     const { name, image, bio, skills } = req.body;
 
+    const queryConditions = [targetId];
+    if (ObjectId.isValid(targetId)) {
+      queryConditions.push(new ObjectId(targetId));
+    }
+
     const result = await usersCollection.updateOne(
-      { _id: req.user.id },
+      { _id: { $in: queryConditions } },
       {
         $set: {
           name,
@@ -891,6 +914,11 @@ app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
         },
       },
     );
+
+    console.log("[DB RESULT] Metrics returned:", {
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+    });
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -904,10 +932,63 @@ app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
       message: "Profile dataset values updated successfully.",
     });
   } catch (error) {
-    console.error("Update profile metadata exception:", error);
+    console.error("\n✕ !!! CRITICAL UPDATE PIPELINE EXCEPTION !!! ✕");
     res.status(500).json({
       success: false,
       error: "Internal update engine processing pipeline failed.",
+    });
+  }
+});
+
+// =================================================================
+// --- COLLABORATOR TELEMETRY DASHBOARD METRICS ---
+// =================================================================
+
+// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics
+app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
+  try {
+    const applicationsCollection = db.collection("applications");
+    const targetId = req.user.id;
+
+    // Type-agnostic matching support matrix (String vs native ObjectId shapes)
+    const queryConditions = [targetId];
+    if (ObjectId.isValid(targetId)) {
+      queryConditions.push(new ObjectId(targetId));
+    }
+
+    // Run dynamic counting aggregates straight across the applications pool
+    const [totalApplied, totalAccepted, totalPending] = await Promise.all([
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+      }),
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+        status: "Accepted",
+      }),
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+        status: "Pending",
+      }),
+    ]);
+
+    console.log(`\n--- [COLLABORATOR OVERVIEW TELEMETRY] ---`);
+    console.log(
+      `User: ${req.user.email} | Applied: ${totalApplied} | Accepted: ${totalAccepted} | Pending: ${totalPending}`,
+    );
+
+    res.json({
+      success: true,
+      data: {
+        totalApplied,
+        totalAccepted,
+        totalPending,
+      },
+    });
+  } catch (error) {
+    console.error("Collaborator overview metrics compilation failure:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal analytics pipeline processing failed.",
     });
   }
 });
@@ -1190,6 +1271,23 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+// =================================================================
+// PASTE THIS AT THE ABSOLUTE BOTTOM OF index.js (BEFORE startServer)
+// =================================================================
+
+// Catch-all route to debug every single unhandled request hitting this port
+app.use((req, res) => {
+  console.log(`\n⚠️ [404 CATCH-ALL] Unhandled request intercepted!`);
+  console.log(`Method: ${req.method}`);
+  console.log(`Requested URL: ${req.url}`);
+  console.log(`Headers Host: ${req.headers.host}`);
+
+  res.status(404).json({
+    success: false,
+    error: `Route ${req.method} ${req.url} does not exist on this active process thread.`,
+  });
+});
 
 startServer();
 
