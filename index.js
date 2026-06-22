@@ -374,7 +374,7 @@ app.delete(
 // --- MARKET OPPORTUNITIES MANAGEMENT MODULE ---
 // =============================================
 
-// Post New Position Opportunity
+// POST: Post New Position Opportunity with Tier Quota Limits Enforced
 app.post(
   "/api/opportunities",
   requireAuth,
@@ -385,6 +385,7 @@ app.post(
         req.app.locals.opportunities || db.collection("opportunities");
       const startupsCollection =
         req.app.locals.startups || db.collection("startups");
+      const usersCollection = db.collection("user");
 
       const {
         startupId,
@@ -396,6 +397,7 @@ app.post(
         industry,
       } = req.body;
 
+      // 1. Validate Input Presence
       if (
         !startupId ||
         !roleTitle ||
@@ -418,9 +420,36 @@ app.post(
         });
       }
 
+      // 2. Resolve Dynamic Subscription Quotas Boundaries
+      const activeUser = await usersCollection.findOne({
+        email: req.user.email,
+      });
+      const currentPlan = activeUser?.plan || "Free";
+      const allowedCeiling = currentPlan === "Pro" ? 200 : 10;
+
+      // 3. Count Existing Opportunities created by this founder
+      const founderQueryConditions = [req.user.id];
+      if (ObjectId.isValid(req.user.id)) {
+        founderQueryConditions.push(new ObjectId(req.user.id));
+      }
+
+      const totalPostedOpportunities =
+        await opportunitiesCollection.countDocuments({
+          founderId: { $in: founderQueryConditions },
+        });
+
+      // 4. Intercept Request if Quota Is Breached
+      if (totalPostedOpportunities >= allowedCeiling) {
+        return res.status(403).json({
+          success: false,
+          error: `Quota Breached: Your current ${currentPlan} tier limits you to ${allowedCeiling} active opportunity postings maximum. Upgrade to Pro to unlock up to 200 roles.`,
+        });
+      }
+
+      // 5. Ensure the founder actually owns the targeted startup profile
       const startup = await startupsCollection.findOne({
         _id: new ObjectId(startupId),
-        founderId: req.user.id,
+        founderId: { $in: founderQueryConditions },
       });
 
       if (!startup) {
@@ -431,9 +460,11 @@ app.post(
         });
       }
 
+      // 6. Build and Insert the Document
       const opportunity = {
         startupId: new ObjectId(startupId),
         startupName: startup.startupName,
+        stripeSessionId: null, // Initialized as empty
         startupLogo: startup.logo,
         roleTitle,
         requiredSkills,
