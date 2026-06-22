@@ -447,47 +447,68 @@ app.post(
   },
 );
 
-// --- GET: FETCH OPPORTUNITIES VIA SERVER-SIDE PAGINATION MATRIX ---
+// --- GET: FETCH OPPORTUNITIES (WITH OPTIONAL STARTUP FILTER & PAGINATION) ---
 app.get("/api/opportunities", async (req, res) => {
   try {
     const opportunitiesCollection =
       req.app.locals.opportunities || db.collection("opportunities");
 
-    // 1. Extract and sanitize pagination params from the query string
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 6;
+    const { startupId, page, limit } = req.query;
 
-    // Calculate database cursor skip offset boundaries
-    const skip = (page - 1) * limit;
+    // 1. Build a dynamic query matrix
+    let query = {};
+    if (startupId) {
+      if (!ObjectId.isValid(startupId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Malformed Startup ID format." });
+      }
+      query.startupId = new ObjectId(startupId);
+    }
 
-    // 2. Execute parallel optimized database tracking count and find queries
+    // 2. TARGETED FLOW: If checking a specific startup profile, return ALL its jobs immediately
+    if (startupId) {
+      const listings = await opportunitiesCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      return res.status(200).json({ success: true, data: listings });
+    }
+
+    // 3. GLOBAL FLOW: Apply default homepage server-side pagination boundaries
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 6;
+    const skip = (pageNum - 1) * limitNum;
+
     const [totalDocuments, listings] = await Promise.all([
-      opportunitiesCollection.countDocuments({}),
+      opportunitiesCollection.countDocuments(query),
       opportunitiesCollection
-        .find({})
+        .find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit)
+        .limit(limitNum)
         .toArray(),
     ]);
 
-    // 3. Return balanced document block bundled with algorithmic index stats
     res.status(200).json({
       success: true,
       data: listings,
       pagination: {
         total: totalDocuments,
-        page: page,
-        limit: limit,
-        totalPages: Math.ceil(totalDocuments / limit),
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(totalDocuments / limitNum),
       },
     });
   } catch (error) {
-    console.error("DB Fetch Opportunities Server Pagination Exception:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error retrieving paginated opportunities.",
-    });
+    console.error("DB Fetch Opportunities Pagination/Filter Exception:", error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: "Internal server error sorting positions collection.",
+      });
   }
 });
 
