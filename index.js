@@ -850,7 +850,6 @@ app.get("/api/collaborator/profile", requireAuth, async (req, res) => {
     const usersCollection = db.collection("user");
     const targetId = req.user.id;
 
-    // Build a type-agnostic lookup array to handle both String and ObjectId shapes
     const queryConditions = [targetId];
     if (ObjectId.isValid(targetId)) {
       queryConditions.push(new ObjectId(targetId));
@@ -950,13 +949,11 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
     const applicationsCollection = db.collection("applications");
     const targetId = req.user.id;
 
-    // Type-agnostic matching support matrix (String vs native ObjectId shapes)
     const queryConditions = [targetId];
     if (ObjectId.isValid(targetId)) {
       queryConditions.push(new ObjectId(targetId));
     }
 
-    // Run dynamic counting aggregates straight across the applications pool
     const [totalApplied, totalAccepted, totalPending] = await Promise.all([
       applicationsCollection.countDocuments({
         applicantId: { $in: queryConditions },
@@ -992,6 +989,83 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
     });
   }
 });
+
+// =================================================================
+// --- FOUNDER DASHBOARD TELEMETRY INSIGHTS PIPELINE ---
+// =================================================================
+
+app.get(
+  "/api/founder/overview",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const opportunitiesCollection = db.collection("opportunities");
+      const applicationsCollection = db.collection("applications");
+      const targetFounderId = req.user.id;
+
+      const founderQueryConditions = [targetFounderId];
+      if (ObjectId.isValid(targetFounderId)) {
+        founderQueryConditions.push(new ObjectId(targetFounderId));
+      }
+
+      const myOpportunities = await opportunitiesCollection
+        .find({ founderId: { $in: founderQueryConditions } })
+        .project({ _id: 1 })
+        .toArray();
+
+      const opportunityIdsStrings = myOpportunities.map((opp) =>
+        opp._id.toString(),
+      );
+
+      const recentApplications = await applicationsCollection
+        .find({ opportunityId: { $in: opportunityIdsStrings } })
+        .sort({ createdAt: -1 })
+        .limit(4)
+        .toArray();
+
+      const [totalOpportunities, totalApplications, totalAccepted] =
+        await Promise.all([
+          opportunitiesCollection.countDocuments({
+            founderId: { $in: founderQueryConditions },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+            status: "Accepted",
+          }),
+        ]);
+
+      console.log(`\n--- [FOUNDER METRICS CALCULATED ENGINE] ---`);
+      console.log(
+        `Founder: ${req.user.email} | Opps: ${totalOpportunities} | Apps: ${totalApplications}`,
+      );
+
+      res.json({
+        success: true,
+        data: {
+          metrics: {
+            totalOpportunities,
+            totalApplications,
+            totalAccepted,
+          },
+          recentApplications,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Critical error compiling founder overview analytics metrics:",
+        error,
+      );
+      res.status(500).json({
+        success: false,
+        error: "Internal server error resolving dashboard data summaries.",
+      });
+    }
+  },
+);
 
 // =================================================================
 // --- SYSTEM ADMIN MANAGEMENT INFRASTRUCTURE COMMAND DECKS ---
@@ -1242,7 +1316,19 @@ app.get(
   },
 );
 
-// --- Server Lifecycle Connection Handlers ---
+// Catch-all route to debug every single unhandled request hitting this port
+app.use((req, res) => {
+  console.log(`\n⚠️ [404 CATCH-ALL] Unhandled request intercepted!`);
+  console.log(`Method: ${req.method}`);
+  console.log(`Requested URL: ${req.url}`);
+  console.log(`Headers Host: ${req.headers.host}`);
+
+  res.status(404).json({
+    success: false,
+    error: `Route ${req.method} ${req.url} does not exist on this active process thread.`,
+  });
+});
+
 async function startServer() {
   try {
     console.log("Connecting to MongoDB Atlas Cluster...");
@@ -1271,23 +1357,6 @@ async function startServer() {
     process.exit(1);
   }
 }
-
-// =================================================================
-// PASTE THIS AT THE ABSOLUTE BOTTOM OF index.js (BEFORE startServer)
-// =================================================================
-
-// Catch-all route to debug every single unhandled request hitting this port
-app.use((req, res) => {
-  console.log(`\n⚠️ [404 CATCH-ALL] Unhandled request intercepted!`);
-  console.log(`Method: ${req.method}`);
-  console.log(`Requested URL: ${req.url}`);
-  console.log(`Headers Host: ${req.headers.host}`);
-
-  res.status(404).json({
-    success: false,
-    error: `Route ${req.method} ${req.url} does not exist on this active process thread.`,
-  });
-});
 
 startServer();
 
