@@ -392,12 +392,10 @@ app.post(
       }
 
       if (!ObjectId.isValid(startupId)) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "Malformed Startup ID alignment schema.",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "Malformed Startup ID alignment schema.",
+        });
       }
 
       // 2. Security Check: Verify this startup belongs to the logged-in founder
@@ -441,31 +439,55 @@ app.post(
       });
     } catch (error) {
       console.error("Create opportunity relational mapping error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Failed to link and create opportunity.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to link and create opportunity.",
+      });
     }
   },
 );
 
-// Public Endpoint: Fetch All Registered Opportunities
+// --- GET: FETCH OPPORTUNITIES VIA SERVER-SIDE PAGINATION MATRIX ---
 app.get("/api/opportunities", async (req, res) => {
   try {
     const opportunitiesCollection =
       req.app.locals.opportunities || db.collection("opportunities");
-    const opportunities = await opportunitiesCollection
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.json({ success: true, data: opportunities });
+
+    // 1. Extract and sanitize pagination params from the query string
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 6;
+
+    // Calculate database cursor skip offset boundaries
+    const skip = (page - 1) * limit;
+
+    // 2. Execute parallel optimized database tracking count and find queries
+    const [totalDocuments, listings] = await Promise.all([
+      opportunitiesCollection.countDocuments({}),
+      opportunitiesCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
+    ]);
+
+    // 3. Return balanced document block bundled with algorithmic index stats
+    res.status(200).json({
+      success: true,
+      data: listings,
+      pagination: {
+        total: totalDocuments,
+        page: page,
+        limit: limit,
+        totalPages: Math.ceil(totalDocuments / limit),
+      },
+    });
   } catch (error) {
-    console.error("List opportunities error:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to fetch opportunities" });
+    console.error("DB Fetch Opportunities Server Pagination Exception:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error retrieving paginated opportunities.",
+    });
   }
 });
 
