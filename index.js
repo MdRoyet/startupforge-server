@@ -1,4 +1,19 @@
 require("dotenv").config();
+
+console.log("\n=== 🔍 BACKEND ENV SANITY DIAGNOSIS ===");
+console.log("Terminal Execution Path (CWD):", process.cwd());
+console.log(
+  "Is STRIPE_SECRET_KEY visible?:",
+  process.env.STRIPE_SECRET_KEY ? "YES ✅" : "NO ❌ (Missing/Undefined)",
+);
+if (process.env.STRIPE_SECRET_KEY) {
+  console.log(
+    "Key starting characters check:",
+    process.env.STRIPE_SECRET_KEY.slice(0, 10) + "...",
+  );
+}
+console.log("=========================================\n");
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -35,6 +50,20 @@ app.use(
   }),
 );
 app.use(express.json());
+
+console.log("\n=== 🔍 BACKEND ENV SANITY DIAGNOSIS ===");
+console.log("Terminal Execution Path (CWD):", process.cwd());
+console.log(
+  "Is STRIPE_SECRET_KEY visible?:",
+  process.env.STRIPE_SECRET_KEY ? "YES ✅" : "NO ❌ (Missing/Undefined)",
+);
+if (process.env.STRIPE_SECRET_KEY) {
+  console.log(
+    "Key starting characters check:",
+    process.env.STRIPE_SECRET_KEY.slice(0, 10) + "...",
+  );
+}
+console.log("=========================================\n");
 
 // --- Authentication Middleware ---
 async function requireAuth(req, res, next) {
@@ -1042,6 +1071,9 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
 // =================================================================
 // --- STRIPE SUCCESS TRANSACTION CAPTURE & RECORD FULFILLMENT ---
 // =================================================================
+// =================================================================
+// --- STRIPE SUCCESS TRANSACTION CAPTURE & RECORD FULFILLMENT ---
+// =================================================================
 app.post("/api/checkout/success", async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -1051,19 +1083,18 @@ app.post("/api/checkout/success", async (req, res) => {
         .json({ success: false, error: "Missing session identifier token." });
     }
 
-    // SAFE GUARD: Dynamically require and initialize Stripe if not defined globally
-    const stripeInstance =
-      typeof stripe !== "undefined"
-        ? stripe
-        : require("stripe")(process.env.STRIPE_SECRET_KEY);
-
-    if (!process.env.STRIPE_SECRET_KEY) {
+    // 1. STEP ONE: Validate the key string BEFORE initializing the Stripe constructor
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey || secretKey.trim() === "") {
       return res.status(500).json({
         success: false,
         error:
-          "Server Configuration Error: STRIPE_SECRET_KEY is missing from backend variables.",
+          "Server Configuration Error: STRIPE_SECRET_KEY is empty or missing from your backend .env file.",
       });
     }
+
+    // 2. STEP TWO: Safely spin up the instance now that the key is verified
+    const stripeInstance = require("stripe")(secretKey);
 
     // Retrieve the checkout session from Stripe
     const stripeSession =
@@ -1075,7 +1106,7 @@ app.post("/api/checkout/success", async (req, res) => {
       });
     }
 
-    // SAFE GUARD: Ensure database pointers are fully available
+    // Ensure database pointers are fully available
     const currentDb = req.app.locals.db || db;
     if (!currentDb) {
       return res.status(500).json({
@@ -1123,6 +1154,16 @@ app.post("/api/checkout/success", async (req, res) => {
       dateSettled: new Date(),
     });
 
+    // Write log directly inside transactions collection for admin overview audits dashboard sync
+    await currentDb.collection("transactions").insertOne({
+      stripeSessionId: sessionId,
+      userEmail: customerEmail,
+      userName: customerAccount.name,
+      amount: capitalVolume,
+      status: "Succeeded",
+      date: new Date(),
+    });
+
     // Elevate the user to the Pro Plan
     await usersCollection.updateOne(
       { _id: customerAccount._id },
@@ -1139,8 +1180,6 @@ app.post("/api/checkout/success", async (req, res) => {
     });
   } catch (error) {
     console.error("Fulfillment intercept execution error loop pass:", error);
-
-    // EXPOSE ERROR MESSAGE: Return the exact crash trace to pinpoint configuration errors instantly
     return res.status(500).json({
       success: false,
       error: `Internal Execution Error: ${error.message}`,
