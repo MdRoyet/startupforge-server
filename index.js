@@ -991,6 +991,226 @@ app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
 });
 
 // =================================================================
+// --- WORKSPACE FULFILLMENT & TELEMETRY DECKS ---
+// =================================================================
+
+// GET: Fetch Dynamic Collaborator Dashboard Counter Metrics
+app.get("/api/collaborator/overview", requireAuth, async (req, res) => {
+  try {
+    const applicationsCollection = db.collection("applications");
+    const usersCollection = db.collection("user");
+    const targetId = req.user.id;
+
+    const queryConditions = [targetId];
+    if (ObjectId.isValid(targetId)) {
+      queryConditions.push(new ObjectId(targetId));
+    }
+
+    const activeUser = await usersCollection.findOne({
+      _id: { $in: queryConditions },
+    });
+    const userPlan = activeUser?.plan || "Free";
+
+    const [totalApplied, totalAccepted, totalPending] = await Promise.all([
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+      }),
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+        status: "Accepted",
+      }),
+      applicationsCollection.countDocuments({
+        applicantId: { $in: queryConditions },
+        status: "Pending",
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: { totalApplied, totalAccepted, totalPending, plan: userPlan },
+    });
+  } catch (error) {
+    console.error("Collaborator overview telemetry exception:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal analytics pipeline processing failed.",
+    });
+  }
+});
+
+// POST: Stripe Success Transaction Capture & Record Fulfillment
+// =================================================================
+// --- STRIPE SUCCESS TRANSACTION CAPTURE & RECORD FULFILLMENT ---
+// =================================================================
+app.post("/api/checkout/success", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing session identifier token." });
+    }
+
+    // SAFE GUARD: Dynamically require and initialize Stripe if not defined globally
+    const stripeInstance =
+      typeof stripe !== "undefined"
+        ? stripe
+        : require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({
+        success: false,
+        error:
+          "Server Configuration Error: STRIPE_SECRET_KEY is missing from backend variables.",
+      });
+    }
+
+    // Retrieve the checkout session from Stripe
+    const stripeSession =
+      await stripeInstance.checkout.sessions.retrieve(sessionId);
+    if (!stripeSession || stripeSession.payment_status !== "paid") {
+      return res.status(400).json({
+        success: false,
+        error: "Transaction mapping validation check rejected.",
+      });
+    }
+
+    // SAFE GUARD: Ensure database pointers are fully available
+    const currentDb = req.app.locals.db || db;
+    if (!currentDb) {
+      return res.status(500).json({
+        success: false,
+        error: "Server Lifecycle Error: Database connection is not ready yet.",
+      });
+    }
+
+    const paymentsCollection = currentDb.collection("payments");
+    const usersCollection = currentDb.collection("user");
+
+    // Check if this transaction has already been fulfilled
+    const transactionLogged = await paymentsCollection.findOne({
+      stripeSessionId: sessionId,
+    });
+    if (transactionLogged) {
+      return res.json({
+        success: true,
+        message: "Fulfillment completed during previous execution cycle.",
+      });
+    }
+
+    const customerEmail = stripeSession.customer_details?.email;
+    const capitalVolume = stripeSession.amount_total / 100;
+
+    // Find the user associated with the payment email
+    const customerAccount = await usersCollection.findOne({
+      email: customerEmail,
+    });
+    if (!customerAccount) {
+      return res.status(404).json({
+        success: false,
+        error: `Fulfillment Sync Error: No user account found matching checkout email "${customerEmail}".`,
+      });
+    }
+
+    // Log transaction payload directly into payments collection
+    await paymentsCollection.insertOne({
+      stripeSessionId: sessionId,
+      userId: customerAccount._id,
+      userEmail: customerEmail,
+      userName: customerAccount.name,
+      amountPaid: capitalVolume,
+      currency: stripeSession.currency?.toUpperCase() || "USD",
+      dateSettled: new Date(),
+    });
+
+    // Elevate the user to the Pro Plan
+    await usersCollection.updateOne(
+      { _id: customerAccount._id },
+      { $set: { plan: "Pro", updatedAt: new Date() } },
+    );
+
+    console.log(
+      `\n✓ [STRIPE FULFILLMENT COMPLETED] Upgraded: ${customerEmail}`,
+    );
+
+    return res.json({
+      success: true,
+      message: "Transaction saved and plan elevated successfully.",
+    });
+  } catch (error) {
+    console.error("Fulfillment intercept execution error loop pass:", error);
+
+    // EXPOSE ERROR MESSAGE: Return the exact crash trace to pinpoint configuration errors instantly
+    return res.status(500).json({
+      success: false,
+      error: `Internal Execution Error: ${error.message}`,
+    });
+  }
+});
+
+// GET: Founder Dashboard Insights Telemetry
+app.get(
+  "/api/founder/overview",
+  requireAuth,
+  requireRole("Founder"),
+  async (req, res) => {
+    try {
+      const opportunitiesCollection = db.collection("opportunities");
+      const applicationsCollection = db.collection("applications");
+      const targetFounderId = req.user.id;
+
+      const founderQueryConditions = [targetFounderId];
+      if (ObjectId.isValid(targetFounderId)) {
+        founderQueryConditions.push(new ObjectId(targetFounderId));
+      }
+
+      const myOpportunities = await opportunitiesCollection
+        .find({ founderId: { $in: founderQueryConditions } })
+        .project({ _id: 1 })
+        .toArray();
+
+      const opportunityIdsStrings = myOpportunities.map((opp) =>
+        opp._id.toString(),
+      );
+
+      const recentApplications = await applicationsCollection
+        .find({ opportunityId: { $in: opportunityIdsStrings } })
+        .sort({ createdAt: -1 })
+        .limit(4)
+        .toArray();
+
+      const [totalOpportunities, totalApplications, totalAccepted] =
+        await Promise.all([
+          opportunitiesCollection.countDocuments({
+            founderId: { $in: founderQueryConditions },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+          }),
+          applicationsCollection.countDocuments({
+            opportunityId: { $in: opportunityIdsStrings },
+            status: "Accepted",
+          }),
+        ]);
+
+      res.json({
+        success: true,
+        data: {
+          metrics: { totalOpportunities, totalApplications, totalAccepted },
+          recentApplications,
+        },
+      });
+    } catch (error) {
+      console.error("Error compiling founder overview analytics:", error);
+      res.status(500).json({
+        success: false,
+        error: "Internal server error resolving dashboard data summaries.",
+      });
+    }
+  },
+);
+
+// =================================================================
 // --- FOUNDER DASHBOARD TELEMETRY INSIGHTS PIPELINE ---
 // =================================================================
 
