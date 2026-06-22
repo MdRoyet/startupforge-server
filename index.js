@@ -55,6 +55,12 @@ async function requireAuth(req, res, next) {
 
     req.user = session.user;
     req.session = session.session;
+
+    // --- ADMINISTRATIVE PRIVILEGE INJECT SECURITY INTERCEPT ---
+    if (req.user?.email === "admin@startupforge.com") {
+      req.user.role = "Admin";
+    }
+
     next();
   } catch (error) {
     console.error("Auth middleware error:", error);
@@ -176,6 +182,7 @@ app.post(
         fundingStage,
         founderEmail,
         founderId: req.user.id,
+        isApproved: false, // Default admin verification status path pointer
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -296,12 +303,10 @@ app.put(
       });
     } catch (error) {
       console.error("CRITICAL DB Update Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server update error pipeline failed.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server update error pipeline failed.",
+      });
     }
   },
 );
@@ -342,12 +347,10 @@ app.delete(
       });
     } catch (error) {
       console.error("DB Deletion Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server deletion pipeline failed.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server deletion pipeline failed.",
+      });
     }
   },
 );
@@ -394,12 +397,10 @@ app.post(
       }
 
       if (!ObjectId.isValid(startupId)) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "Malformed Startup ID alignment schema.",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "Malformed Startup ID alignment schema.",
+        });
       }
 
       const startup = await startupsCollection.findOne({
@@ -441,12 +442,10 @@ app.post(
       });
     } catch (error) {
       console.error("Create opportunity relational mapping error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Failed to link and create opportunity.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to link and create opportunity.",
+      });
     }
   },
 );
@@ -502,23 +501,20 @@ app.get("/api/opportunities", async (req, res) => {
     });
   } catch (error) {
     console.error("DB Fetch Opportunities Pagination/Filter Exception:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Internal server error sorting positions collection.",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Internal server error sorting positions collection.",
+    });
   }
 });
 
-// --- FIXED ENDPOINT: TYPE-AGNOSTIC SINGULAR LOOKUP ---
+// Lookup Singular Specific Opportunity Details
 app.get("/api/opportunities/:id", async (req, res) => {
   try {
     const opportunitiesCollection =
       req.app.locals.opportunities || db.collection("opportunities");
     const targetId = req.params.id;
 
-    // Supports querying by string IDs and ObjectIds simultaneously
     const matchConditions = [targetId];
     if (ObjectId.isValid(targetId)) {
       matchConditions.push(new ObjectId(targetId));
@@ -603,12 +599,10 @@ app.put(
       });
     } catch (error) {
       console.error("DB Update Opportunity Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Internal server error modifying record target values.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Internal server error modifying record target values.",
+      });
     }
   },
 );
@@ -649,13 +643,11 @@ app.delete(
       });
     } catch (error) {
       console.error("DB Deletion Opportunity Exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error:
-            "Internal server error handling document dropping execution pipelines.",
-        });
+      res.status(500).json({
+        success: false,
+        error:
+          "Internal server error handling document dropping execution pipelines.",
+      });
     }
   },
 );
@@ -664,7 +656,7 @@ app.delete(
 // --- APPLICATIONS PIPELINE FLOW MODULE ---
 // =============================================
 
-// --- FIXED ENDPOINT: TYPE-AGNOSTIC APPLICATION INTAKE ---
+// Application Submission Pathway
 app.post(
   "/api/applications",
   requireAuth,
@@ -684,12 +676,10 @@ app.post(
         !portfolioLink ||
         !motivationMessage
       ) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: "All application fields are required",
-          });
+        return res.status(400).json({
+          success: false,
+          error: "All application fields are required",
+        });
       }
 
       const matchConditions = [opportunityId];
@@ -713,12 +703,10 @@ app.post(
       });
 
       if (existing) {
-        return res
-          .status(409)
-          .json({
-            success: false,
-            error: "You have already applied to this opportunity",
-          });
+        return res.status(409).json({
+          success: false,
+          error: "You have already applied to this opportunity",
+        });
       }
 
       const application = {
@@ -782,7 +770,7 @@ app.get("/api/applications", requireAuth, async (req, res) => {
   }
 });
 
-// --- NEW ENDPOINT: FOUNDER ACCEPT/REJECT SYSTEM MANAGEMENT ROUTE ---
+// FOUNDER ACCEPT/REJECT SYSTEM MANAGEMENT ROUTE
 app.patch(
   "/api/applications/:id/status",
   requireAuth,
@@ -804,20 +792,16 @@ app.patch(
         matchConditions.push(new ObjectId(applicationId));
       }
 
-      // 1. Locate the application document target
       const application = await applicationsCollection.findOne({
         _id: { $in: matchConditions },
       });
       if (!application) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: "Application profile registry not found.",
-          });
+        return res.status(404).json({
+          success: false,
+          error: "Application profile registry not found.",
+        });
       }
 
-      // 2. Validate Ownership: Confirm this job belongs to the logged-in founder
       const opportunityMatchConditions = [application.opportunityId];
       if (ObjectId.isValid(application.opportunityId)) {
         opportunityMatchConditions.push(
@@ -831,15 +815,12 @@ app.patch(
       });
 
       if (!opportunity) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            error: "Forbidden: Access denied to change this document state.",
-          });
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden: Access denied to change this document state.",
+        });
       }
 
-      // 3. Commit status changes
       await applicationsCollection.updateOne(
         { _id: application._id },
         { $set: { status, updatedAt: new Date() } },
@@ -851,11 +832,280 @@ app.patch(
       });
     } catch (error) {
       console.error("Application processing toggle exception:", error);
+      res.status(500).json({
+        success: false,
+        error: "Internal server error altering status state.",
+      });
+    }
+  },
+);
+
+// =================================================================
+// --- SYSTEM ADMIN MANAGEMENT INFRASTRUCTURE COMMAND DECKS ---
+// =================================================================
+
+// GET: Core Telemetry Analytical Overview Aggregator Deck
+app.get(
+  "/api/admin/overview",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const totalUsers = await db
+        .collection("user")
+        .countDocuments({ email: { $ne: "admin@startupforge.com" } });
+      const totalStartups = await db.collection("startups").countDocuments({});
+      const totalOpportunities = await db
+        .collection("opportunities")
+        .countDocuments({});
+
+      // Aggregate capital fields inside ledger indexes
+      const financialAggregation = await db
+        .collection("transactions")
+        .aggregate([
+          {
+            $match: {
+              status: { $in: ["Succeeded", "succeeded", "Paid", "paid"] },
+            },
+          },
+          { $group: { _id: null, revenueTotal: { $sum: "$amount" } } },
+        ])
+        .toArray();
+
+      const totalRevenue = financialAggregation[0]?.revenueTotal || 0;
+
+      res.json({
+        success: true,
+        data: { totalUsers, totalStartups, totalOpportunities, totalRevenue },
+      });
+    } catch (error) {
+      console.error("Overview aggregation mapping failure:", error);
       res
         .status(500)
         .json({
           success: false,
-          error: "Internal server error altering status state.",
+          error:
+            "System failed to resolve core overview records data components.",
+        });
+    }
+  },
+);
+
+// GET: View All Registered User Accounts (Admin Curated Manifest View)
+app.get(
+  "/api/admin/users",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const usersCollection = db.collection("user");
+      const operationalUsersList = await usersCollection
+        .find({ email: { $ne: "admin@startupforge.com" } })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.json({ success: true, data: operationalUsersList });
+    } catch (error) {
+      console.error("Admin user indexing exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Failed to read system accounts list.",
+        });
+    }
+  },
+);
+
+// PATCH: Toggle Account Ban Processing Suspension Flags (Block/Unblock Operations)
+app.patch(
+  "/api/admin/users/:id/toggle-block",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const usersCollection = db.collection("user");
+      const targetUserId = req.params.id;
+      const { isBlocked } = req.body;
+
+      const queryConditions = [targetUserId];
+      if (ObjectId.isValid(targetUserId)) {
+        queryConditions.push(new ObjectId(targetUserId));
+      }
+
+      const matchUser = await usersCollection.findOne({
+        _id: { $in: queryConditions },
+      });
+      if (!matchUser) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error: "Target structural context operator record missing.",
+          });
+      }
+
+      await usersCollection.updateOne(
+        { _id: matchUser._id },
+        { $set: { isBlocked: !!isBlocked, updatedAt: new Date() } },
+      );
+
+      res.json({
+        success: true,
+        message: `Access processing state updated successfully.`,
+      });
+    } catch (error) {
+      console.error("Admin toggle user block exception:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Failed to write modifications to account document state.",
+        });
+    }
+  },
+);
+
+// GET: View All Startups across ecosystem clusters (Admin Auditing Matrix Desk)
+app.get(
+  "/api/admin/startups",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const startupsCollection = db.collection("startups");
+      const ecosystemStartupsDeck = await startupsCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.json({ success: true, data: ecosystemStartupsDeck });
+    } catch (error) {
+      console.error("Admin read startups matrix error:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Failed to map active startups entries.",
+        });
+    }
+  },
+);
+
+// PATCH: Approve / Validate Startup Active Profile Visibility Field Listing
+app.patch(
+  "/api/admin/startups/:id/approve",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const startupsCollection = db.collection("startups");
+      const targetId = req.params.id;
+      const { isApproved } = req.body;
+
+      const conditions = [targetId];
+      if (ObjectId.isValid(targetId)) {
+        conditions.push(new ObjectId(targetId));
+      }
+
+      const patchAction = await startupsCollection.updateOne(
+        { _id: { $in: conditions } },
+        { $set: { isApproved: !!isApproved, updatedAt: new Date() } },
+      );
+
+      if (patchAction.matchedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error: "Venture identity asset node not matching.",
+          });
+      }
+
+      res.json({
+        success: true,
+        message:
+          "Venture structural verification parameters committed successfully.",
+      });
+    } catch (error) {
+      console.error("Admin verification toggle failure:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            "Failed to authorize status value configuration modification changes.",
+        });
+    }
+  },
+);
+
+// DELETE: Administrative Hard Eviction Removal of Fraudulent Startup Node Data Clusters
+app.delete(
+  "/api/admin/startups/:id",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const startupsCollection = db.collection("startups");
+      const targetId = req.params.id;
+
+      const matchConditions = [targetId];
+      if (ObjectId.isValid(targetId)) {
+        matchConditions.push(new ObjectId(targetId));
+      }
+
+      const deletionReport = await startupsCollection.deleteOne({
+        _id: { $in: matchConditions },
+      });
+
+      if (deletionReport.deletedCount === 0) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error: "Venture target entry reference not found.",
+          });
+      }
+
+      res.json({
+        success: true,
+        message:
+          "Target profile node context permanently removed from active directories.",
+      });
+    } catch (error) {
+      console.error("Admin hard delete startup failure:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error: "Forced database records cleanup process aborted.",
+        });
+    }
+  },
+);
+
+// GET: Financial Accounting System Auditing Transcripts Log Sheet Ledger
+app.get(
+  "/api/admin/transactions",
+  requireAuth,
+  requireRole("Admin"),
+  async (req, res) => {
+    try {
+      const systemFinancialHistory = await db
+        .collection("transactions")
+        .find({})
+        .sort({ date: -1 })
+        .toArray();
+
+      res.json({ success: true, data: systemFinancialHistory });
+    } catch (error) {
+      console.error("Admin finance audit mapping error:", error);
+      res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            "Failed to extract core payment transaction documents history.",
         });
     }
   },
