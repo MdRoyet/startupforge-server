@@ -182,7 +182,7 @@ app.post(
         fundingStage,
         founderEmail,
         founderId: req.user.id,
-        isApproved: false, // Default admin verification status path pointer
+        isApproved: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -356,7 +356,7 @@ app.delete(
 );
 
 // =============================================
-// --- OPPORTUNITIES CRUD MANAGEMENT MODULE ---
+// --- MARKET OPPORTUNITIES MANAGEMENT MODULE ---
 // =============================================
 
 // Post New Position Opportunity
@@ -779,7 +779,7 @@ app.patch(
     try {
       const applicationsCollection = db.collection("applications");
       const applicationId = req.params.id;
-      const { status } = req.body; // Expects "Accepted" or "Rejected"
+      const { status } = req.body;
 
       if (!["Accepted", "Rejected"].includes(status)) {
         return res
@@ -841,6 +841,78 @@ app.patch(
 );
 
 // =================================================================
+// --- COLLABORATOR DATA PERSISTENCE PROFILE INSTANCES ---
+// =================================================================
+
+// GET: Fetch Active Collaborator Profile Specifications
+app.get("/api/collaborator/profile", requireAuth, async (req, res) => {
+  try {
+    const usersCollection = db.collection("user");
+    const activeUser = await usersCollection.findOne({ _id: req.user.id });
+    if (!activeUser) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Identity records profile not found." });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        name: activeUser.name,
+        email: activeUser.email,
+        image: activeUser.image,
+        bio: activeUser.bio || "",
+        skills: activeUser.skills || [],
+      },
+    });
+  } catch (error) {
+    console.error("Fetch profile configuration mapping exception:", error);
+    res
+      .status(500)
+      .json({ success: false, error: "Internal registry reading fault." });
+  }
+});
+
+// PUT: Modify/Synchronize Extended Collaborator Profile Values
+app.put("/api/collaborator/profile", requireAuth, async (req, res) => {
+  try {
+    const usersCollection = db.collection("user");
+    const { name, image, bio, skills } = req.body;
+
+    const result = await usersCollection.updateOne(
+      { _id: req.user.id },
+      {
+        $set: {
+          name,
+          image,
+          bio: bio || "",
+          skills: Array.isArray(skills) ? skills : [],
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User collection profile mapping index missing.",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Profile dataset values updated successfully.",
+    });
+  } catch (error) {
+    console.error("Update profile metadata exception:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal update engine processing pipeline failed.",
+    });
+  }
+});
+
+// =================================================================
 // --- SYSTEM ADMIN MANAGEMENT INFRASTRUCTURE COMMAND DECKS ---
 // =================================================================
 
@@ -859,7 +931,6 @@ app.get(
         .collection("opportunities")
         .countDocuments({});
 
-      // Aggregate capital fields inside ledger indexes
       const financialAggregation = await db
         .collection("transactions")
         .aggregate([
@@ -880,13 +951,11 @@ app.get(
       });
     } catch (error) {
       console.error("Overview aggregation mapping failure:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error:
-            "System failed to resolve core overview records data components.",
-        });
+      res.status(500).json({
+        success: false,
+        error:
+          "System failed to resolve core overview records data components.",
+      });
     }
   },
 );
@@ -907,12 +976,10 @@ app.get(
       res.json({ success: true, data: operationalUsersList });
     } catch (error) {
       console.error("Admin user indexing exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Failed to read system accounts list.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to read system accounts list.",
+      });
     }
   },
 );
@@ -937,12 +1004,10 @@ app.patch(
         _id: { $in: queryConditions },
       });
       if (!matchUser) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: "Target structural context operator record missing.",
-          });
+        return res.status(404).json({
+          success: false,
+          error: "Target structural context operator record missing.",
+        });
       }
 
       await usersCollection.updateOne(
@@ -956,12 +1021,10 @@ app.patch(
       });
     } catch (error) {
       console.error("Admin toggle user block exception:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Failed to write modifications to account document state.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to write modifications to account document state.",
+      });
     }
   },
 );
@@ -981,12 +1044,10 @@ app.get(
       res.json({ success: true, data: ecosystemStartupsDeck });
     } catch (error) {
       console.error("Admin read startups matrix error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Failed to map active startups entries.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to map active startups entries.",
+      });
     }
   },
 );
@@ -1013,12 +1074,10 @@ app.patch(
       );
 
       if (patchAction.matchedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: "Venture identity asset node not matching.",
-          });
+        return res.status(404).json({
+          success: false,
+          error: "Venture identity asset node not matching.",
+        });
       }
 
       res.json({
@@ -1028,13 +1087,11 @@ app.patch(
       });
     } catch (error) {
       console.error("Admin verification toggle failure:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error:
-            "Failed to authorize status value configuration modification changes.",
-        });
+      res.status(500).json({
+        success: false,
+        error:
+          "Failed to authorize status value configuration modification changes.",
+      });
     }
   },
 );
@@ -1059,12 +1116,10 @@ app.delete(
       });
 
       if (deletionReport.deletedCount === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            error: "Venture target entry reference not found.",
-          });
+        return res.status(404).json({
+          success: false,
+          error: "Venture target entry reference not found.",
+        });
       }
 
       res.json({
@@ -1074,12 +1129,10 @@ app.delete(
       });
     } catch (error) {
       console.error("Admin hard delete startup failure:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error: "Forced database records cleanup process aborted.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Forced database records cleanup process aborted.",
+      });
     }
   },
 );
@@ -1100,13 +1153,10 @@ app.get(
       res.json({ success: true, data: systemFinancialHistory });
     } catch (error) {
       console.error("Admin finance audit mapping error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          error:
-            "Failed to extract core payment transaction documents history.",
-        });
+      res.status(500).json({
+        success: false,
+        error: "Failed to extract core payment transaction documents history.",
+      });
     }
   },
 );
