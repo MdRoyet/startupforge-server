@@ -172,7 +172,7 @@ function requireAuth(req, res, next) {
 function requireRole(...roles) {
   return (req, res, next) => {
     const userRole = req.user?.role;
-    if (!userRole || (!roles.includes(userRole) && userRole !== "Admin")) {
+    if (!userRole || (!roles.includes(userRole) && userRole !== "admin")) {
       return res.status(403).json({ success: false, error: "Forbidden" });
     }
     next();
@@ -1431,7 +1431,7 @@ app.get(
 app.get(
   "/api/admin/overview",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const totalUsers = await db
@@ -1475,7 +1475,7 @@ app.get(
 app.get(
   "/api/admin/users",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const usersCollection = db.collection("user");
@@ -1499,7 +1499,7 @@ app.get(
 app.patch(
   "/api/admin/users/:id/toggle-block",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const usersCollection = db.collection("user");
@@ -1548,7 +1548,7 @@ app.patch(
 app.get(
   "/api/admin/startups",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const currentDb = req.app.locals.db || db;
@@ -1573,7 +1573,7 @@ app.get(
 app.patch(
   "/api/admin/startups/:id/approve",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const currentDb = req.app.locals.db || db;
@@ -1628,7 +1628,7 @@ app.patch(
 app.delete(
   "/api/admin/startups/:id",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const currentDb = req.app.locals.db || db;
@@ -1669,7 +1669,7 @@ app.delete(
 app.get(
   "/api/admin/transactions",
   requireAuth,
-  requireRole("Admin"),
+  requireRole("admin"),
   async (req, res) => {
     try {
       const systemFinancialHistory = await db
