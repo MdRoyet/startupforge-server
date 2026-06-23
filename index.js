@@ -1672,6 +1672,44 @@ app.get(
   },
 );
 
+// Express Backend: Creating a Startup
+app.post("/api/founder/my-startup", requireAuth, async (req, res) => {
+  try {
+    // 1. Ensure the user is actually a Founder
+    if (req.user.role !== "Founder") {
+      return res
+        .status(403)
+        .json({ success: false, error: "Only Founders can create startups." });
+    }
+
+    const currentDb = req.app.locals.db || db;
+
+    // 2. Build the startup object and FORCE the Pending status
+    const newStartup = {
+      name: req.body.name,
+      description: req.body.description,
+      industry: req.body.industry,
+      founderId: req.user.id, // Attached from your requireAuth middleware
+      status: "Pending", // 🚨 CRITICAL: Hardcoded so the user cannot manipulate it
+      createdAt: new Date(),
+    };
+
+    // 3. Save to MongoDB
+    const result = await currentDb.collection("startups").insertOne(newStartup);
+
+    res.status(201).json({
+      success: true,
+      message: "Startup created and is waiting for Admin approval!",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error creating startup:", error);
+    res.status(500).json({ success: false, error: "Failed to create startup" });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+
 // Catch-all route to debug every single unhandled request hitting this port
 app.use((req, res) => {
   console.log(`\n⚠️ [404 CATCH-ALL] Unhandled request intercepted!`);
