@@ -947,22 +947,36 @@ app.post(
           founderId: { $in: founderQueryConditions },
         });
       if (totalPostedOpportunities >= allowedCeiling) {
-        return res.status(403).json({
-          success: false,
-          error: `Quota Breached. Upgrade to Pro to post more.`,
-        });
+        return res
+          .status(403)
+          .json({
+            success: false,
+            error: `Quota Breached. Upgrade to Pro to post more.`,
+          });
       }
 
+      // Find the startup...
       const startup = await startupsCollection.findOne({
         _id: ObjectId.isValid(startupId) ? new ObjectId(startupId) : startupId,
         founderId: { $in: founderQueryConditions },
       });
 
       if (!startup)
+        return res
+          .status(403)
+          .json({
+            success: false,
+            error: "Access Denied to this corporate profile.",
+          });
+
+      // 🎯 THE FIX: The Approval Gate! Stop them right here if it's not approved.
+      if (startup.isApproved !== true) {
         return res.status(403).json({
           success: false,
-          error: "Access Denied to this corporate profile.",
+          error:
+            "Action Denied: Your startup is still pending Admin approval. You can only post opportunities for verified startups.",
         });
+      }
 
       const opportunity = {
         startupId: startup._id,
@@ -982,10 +996,12 @@ app.post(
       };
 
       const result = await opportunitiesCollection.insertOne(opportunity);
-      res.status(201).json({
-        success: true,
-        data: { ...opportunity, _id: result.insertedId },
-      });
+      res
+        .status(201)
+        .json({
+          success: true,
+          data: { ...opportunity, _id: result.insertedId },
+        });
     } catch (error) {
       res
         .status(500)
