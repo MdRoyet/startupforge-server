@@ -1540,6 +1540,10 @@ app.patch(
   },
 );
 
+// ============================================================================
+// ADMIN STARTUP MANAGEMENT PIPELINE
+// ============================================================================
+
 // GET: View All Startups across ecosystem clusters (Admin Auditing Matrix Desk)
 app.get(
   "/api/admin/startups",
@@ -1547,11 +1551,13 @@ app.get(
   requireRole("Admin"),
   async (req, res) => {
     try {
-      const startupsCollection = db.collection("startups");
-      const ecosystemStartupsDeck = await startupsCollection
+      const currentDb = req.app.locals.db || db;
+      const ecosystemStartupsDeck = await currentDb
+        .collection("startups")
         .find({})
         .sort({ createdAt: -1 })
         .toArray();
+
       res.json({ success: true, data: ecosystemStartupsDeck });
     } catch (error) {
       console.error("Admin read startups matrix error:", error);
@@ -1570,18 +1576,29 @@ app.patch(
   requireRole("Admin"),
   async (req, res) => {
     try {
-      const startupsCollection = db.collection("startups");
+      const currentDb = req.app.locals.db || db;
       const targetId = req.params.id;
       const { isApproved } = req.body;
 
+      // Robust ID matching (handles both string IDs and MongoDB ObjectIds)
       const conditions = [targetId];
       if (ObjectId.isValid(targetId)) {
         conditions.push(new ObjectId(targetId));
       }
 
-      const patchAction = await startupsCollection.updateOne(
+      // 🎯 THE FIX: Update BOTH the boolean (for the Admin toggle logic)
+      // AND the string status (for the Founder's UI badges) simultaneously.
+      const stringStatus = isApproved ? "Approved" : "Pending";
+
+      const patchAction = await currentDb.collection("startups").updateOne(
         { _id: { $in: conditions } },
-        { $set: { isApproved: !!isApproved, updatedAt: new Date() } },
+        {
+          $set: {
+            isApproved: !!isApproved,
+            status: stringStatus,
+            updatedAt: new Date(),
+          },
+        },
       );
 
       if (patchAction.matchedCount === 0) {
@@ -1614,7 +1631,7 @@ app.delete(
   requireRole("Admin"),
   async (req, res) => {
     try {
-      const startupsCollection = db.collection("startups");
+      const currentDb = req.app.locals.db || db;
       const targetId = req.params.id;
 
       const matchConditions = [targetId];
@@ -1622,7 +1639,7 @@ app.delete(
         matchConditions.push(new ObjectId(targetId));
       }
 
-      const deletionReport = await startupsCollection.deleteOne({
+      const deletionReport = await currentDb.collection("startups").deleteOne({
         _id: { $in: matchConditions },
       });
 
