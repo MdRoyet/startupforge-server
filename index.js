@@ -32,15 +32,43 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
+// Global state caching container for Serverless instances
+let cachedClient = null;
+let cachedDb = null;
+let db = null; // Left global to ensure seamless legacy route mapping
 
-let db;
+// 🎯 SERVERLESS DATABASE MANAGEMENT POOL
+async function getDatabaseConnection() {
+  if (cachedClient && cachedDb) {
+    return cachedDb;
+  }
+
+  if (!uri) {
+    throw new Error(
+      "Critical Configuration Mismatch: MONGODB_URI is undefined.",
+    );
+  }
+
+  const client = new MongoClient(uri, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    },
+    // 🛡️ Safeguards to guarantee execution lifecycle breaks cleanly on connection failure
+    connectTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+  });
+
+  await client.connect();
+  const connectedDb = client.db(dbName);
+
+  // Cache link across warm container lifecycles
+  cachedClient = client;
+  cachedDb = connectedDb;
+
+  return connectedDb;
+}
 
 // CORS configuration supporting dynamic credential passing
 app.use(
@@ -50,6 +78,29 @@ app.use(
   }),
 );
 app.use(express.json());
+
+// ⚡ THE MAGIC SERVERLESS INTERCEPTOR MIDDLEWARE
+// Evaluates connection status on every execution thread automatically
+app.use(async (req, res, next) => {
+  try {
+    const activeDb = await getDatabaseConnection();
+
+    // Bind operational contexts to global state and locals
+    db = activeDb;
+    req.app.locals.db = activeDb;
+    req.app.locals.startups = activeDb.collection("startups");
+    req.app.locals.opportunities = activeDb.collection("opportunities");
+
+    next();
+  } catch (error) {
+    console.error("✕ Database Pipeline Connection Failure Intercepted:", error);
+    res.status(500).json({
+      success: false,
+      error:
+        "Database handshake timeout. Please check your network cluster or retry.",
+    });
+  }
+});
 
 // =================================================================
 // CHAPTER 1: AUTHENTICATION & MIDDLEWARE
@@ -107,8 +158,8 @@ app.post("/api/auth/sync-token", async (req, res) => {
 
     res.cookie("startupforge_jwt", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      secure: true, // 🎯 FORCED TRUE: Required by browsers for cross-site tracking
+      sameSite: "none", // 🎯 CHANGED TO NONE: Allows the cookie to jump from frontend Vercel to backend Vercel
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: "/",
     });
@@ -157,7 +208,7 @@ function requireAuth(req, res, next) {
   }
 }
 
-// 🎯 --- UPGRADED: Stateful Role Verification Middleware ---
+// Stateful Role Verification Middleware
 const requireRole = (...requiredRoles) => {
   return async (req, res, next) => {
     try {
@@ -171,7 +222,6 @@ const requireRole = (...requiredRoles) => {
       const userId = req.user.id;
       const userEmail = req.user.email;
 
-      // Robust query handling for Better-Auth IDs
       const queryConditions = [{ _id: userId }, { id: userId }];
       if (ObjectId.isValid(userId)) {
         queryConditions.push({ _id: new ObjectId(userId) });
@@ -180,7 +230,6 @@ const requireRole = (...requiredRoles) => {
         queryConditions.push({ email: userEmail });
       }
 
-      // Fetch the live user to prevent Stale Cookie bugs
       let liveUser = await currentDb
         .collection("user")
         .findOne({ $or: queryConditions });
@@ -200,7 +249,6 @@ const requireRole = (...requiredRoles) => {
       const liveRole = liveUser.role || "Collaborator";
       const normalizedRoles = requiredRoles.map((r) => r.toLowerCase());
 
-      // Let them through if they match the required role OR if they are a super admin
       if (
         !normalizedRoles.includes(liveRole.toLowerCase()) &&
         liveRole.toLowerCase() !== "admin"
@@ -230,7 +278,6 @@ const requireRole = (...requiredRoles) => {
 // CHAPTER 2: PUBLIC & UTILITY ROUTES
 // =================================================================
 
-// Base Route
 app.get("/", (req, res) => {
   res.json({ message: "StartupForge API is running" });
 });
@@ -277,7 +324,6 @@ app.post("/api/images", upload.single("image"), async (req, res) => {
   }
 });
 
-// Sync Upgraded User Roles from Google Auth JIT Registration
 app.patch("/api/users/role", requireAuth, async (req, res) => {
   try {
     const { role } = req.body;
@@ -317,6 +363,52 @@ app.patch("/api/users/role", requireAuth, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: "Database sync failed." });
+  }
+});
+
+// 🛒 Generate Stripe Checkout Session
+app.post("/api/checkout", requireAuth, async (req, res) => {
+  try {
+    const { plan, price, role } = req.body;
+
+    // Ensure you have STRIPE_SECRET_KEY in your Vercel Environment Variables!
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    const stripeInstance = require("stripe")(secretKey);
+
+    // Create the Stripe Checkout session
+    const session = await stripeInstance.checkout.sessions.create({
+      payment_method_types: ["card"],
+      customer_email: req.user.email, // Grabbed from your requireAuth middleware
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: `StartupForge ${plan || "Pro"} Plan`,
+              description: `Upgrade your account to the ${plan || "Pro"} tier.`,
+            },
+            unit_amount: price ? price * 100 : 9900, // Price in cents (e.g., 9900 = $99.00)
+          },
+          quantity: 1,
+        },
+      ],
+      mode: "payment",
+      metadata: {
+        userId: req.user.id,
+        role: role || req.user.role,
+      },
+      // 🎯 Redirects user back to your LIVE frontend after payment
+      success_url: `https://startupforge-client-kappa.vercel.app/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://startupforge-client-kappa.vercel.app/pricing`,
+    });
+
+    // Send the Stripe URL back to the frontend so it can redirect the user
+    res.json({ success: true, url: session.url });
+  } catch (error) {
+    console.error("Stripe Checkout Error:", error);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to initialize payment gateway." });
   }
 });
 
@@ -947,29 +1039,23 @@ app.post(
           founderId: { $in: founderQueryConditions },
         });
       if (totalPostedOpportunities >= allowedCeiling) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            error: `Quota Breached. Upgrade to Pro to post more.`,
-          });
+        return res.status(403).json({
+          success: false,
+          error: `Quota Breached. Upgrade to Pro to post more.`,
+        });
       }
 
-      // Find the startup...
       const startup = await startupsCollection.findOne({
         _id: ObjectId.isValid(startupId) ? new ObjectId(startupId) : startupId,
         founderId: { $in: founderQueryConditions },
       });
 
       if (!startup)
-        return res
-          .status(403)
-          .json({
-            success: false,
-            error: "Access Denied to this corporate profile.",
-          });
+        return res.status(403).json({
+          success: false,
+          error: "Access Denied to this corporate profile.",
+        });
 
-      // 🎯 THE FIX: The Approval Gate! Stop them right here if it's not approved.
       if (startup.isApproved !== true) {
         return res.status(403).json({
           success: false,
@@ -996,12 +1082,10 @@ app.post(
       };
 
       const result = await opportunitiesCollection.insertOne(opportunity);
-      res
-        .status(201)
-        .json({
-          success: true,
-          data: { ...opportunity, _id: result.insertedId },
-        });
+      res.status(201).json({
+        success: true,
+        data: { ...opportunity, _id: result.insertedId },
+      });
     } catch (error) {
       res
         .status(500)
@@ -1439,7 +1523,6 @@ app.get(
 // CHAPTER 6: SYSTEM LIFECYCLE & CATCH-ALL
 // =================================================================
 
-// Catch-all 404
 app.use((req, res) => {
   console.log(`\n⚠️ [404 CATCH-ALL] Unhandled request intercepted!`);
   console.log(`Method: ${req.method} | URL: ${req.url}`);
@@ -1449,38 +1532,14 @@ app.use((req, res) => {
   });
 });
 
-// Boot Sequence
-async function startServer() {
-  try {
-    console.log("Connecting to MongoDB Atlas Cluster...");
-    await client.connect();
-    await client.db("admin").command({ ping: 1 });
-
-    db = client.db(dbName);
-    app.locals.db = db;
-    app.locals.startups = db.collection("startups");
-    app.locals.opportunities = db.collection("opportunities");
-
-    console.log(`✓ Connected to Database: ${dbName}`);
-
-    app.listen(port, () => {
-      console.log(`✓ Express server listening on network port: ${port}`);
-    });
-  } catch (error) {
-    console.error(
-      "✕ Critical error initializing database routing processes:",
-      error,
+// Local Dev Standalone Boot Sequence (Only runs if NOT on production Vercel serverless containers)
+if (process.env.NODE_ENV !== "production") {
+  app.listen(port, () => {
+    console.log(
+      `✓ Express server listening on local development network port: ${port}`,
     );
-    process.exit(1);
-  }
+  });
 }
 
-startServer();
-
-process.on("SIGINT", async () => {
-  await client.close();
-  console.log(
-    "\nMongoDB interface pipeline closed down cleanly. Server thread terminating.",
-  );
-  process.exit(0);
-});
+// 🚨 CRUCIAL: Export the fully modified Express app instance for the Vercel compilation layer
+module.exports = app;
